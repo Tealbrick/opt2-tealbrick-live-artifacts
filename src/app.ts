@@ -13,7 +13,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { CrudAction } from "@opt2-tealbrick/manifest";
-import { type AppDefinition, type Db, defineApp, type HandlerSpec, type Json, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import type { JobContext, JobsApi } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, type Db, defineApp, type HandlerSpec, type Json, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type ArtifactArchiveInput,
   type ArtifactCreateInput,
@@ -24,6 +25,7 @@ import {
   type ArtifactListInput,
   type ArtifactNewInput,
   type ArtifactPreviewTicketInput,
+  type ArtifactRefreshInput,
   type ArtifactRemoveInput,
   type ArtifactUpdateInput,
   type AutopublishSetInput,
@@ -33,10 +35,15 @@ import {
   type OpId,
   type PublishVersionInput,
   type SettingsSetInput,
+  type SourceApproveInput,
+  type SourceRevokeInput,
+  type SourceTestInput,
+  type TriggerApproveInput,
 } from "#kit";
 import { companionOps, EMPTY_CONTRACT, normalizeContract, parseStoredContract, type RawContract } from "./contract.ts";
 import { LIMITS } from "./limits.ts";
 import { type LintItem, lintErrors, lintHtml } from "./lint.ts";
+import { project, REFRESH_JOB, recordTick, refreshArtifact } from "./refresh.ts";
 import {
   type Actor,
   activityOf,
@@ -313,6 +320,24 @@ export const handlers = {
     },
   }),
 
+  [OP.artifactRefresh]: op<ArtifactRefreshInput, unknown>({
+    scope: () => null,
+    redact: (i) => `refresh page ${i.id}`,
+    async run(i, ctx) {
+      await prepare(ctx);
+      const a = await needArtifact(ctx, i.id, "update");
+      if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
+      const now = clock();
+      const last = a.manual_refresh_at === null ? null : Number(a.manual_refresh_at);
+      if (last !== null && now - last < LIMITS.manualRefreshMs)
+        throw new TbError("refresh_rate_limited", `one refresh per minute per page; try again in ${Math.ceil((LIMITS.manualRefreshMs - (now - last)) / 1000)} s`, 429);
+      ctx.db.prepare("UPDATE la_artifact SET manual_refresh_at = ? WHERE id = ?").run(now, i.id);
+      // the reads use this app's own read-only companion grant; the agent gets the status per source, never the data
+      const out = await refreshArtifact(ctx.db, ctx.callApp as never, i.id, { slot: `manual:${Math.floor(now / LIMITS.manualRefreshMs)}`, ...(i.keys ? { keys: i.keys } : {}), now: clock });
+      return { results: out.results };
+    },
+  }),
+
   // ───────────────────────────────────────────── owner ops
   [OP.galleryView]: op<GalleryViewInput, unknown>({
     async run(i, ctx) {
@@ -360,6 +385,77 @@ export const handlers = {
       if (i.version !== undefined && !versionRow(ctx.db, i.id, i.version)) throw new TbError("version_unknown", `version ${i.version} does not exist`, 404);
       const p = createPreview(ctx.db, i.id, i.version ?? null, actorOf(ctx), clock());
       return { url: `${view}${VIEW_PREFIX}/${p.token}`, version: p.version, expiresAt: new Date(p.expiresAt).toISOString() };
+    },
+  }),
+  [OP.sourceTest]: op<SourceTestInput, unknown>({
+    async run(i, ctx) {
+      const src = ctx.db.prepare("SELECT * FROM la_source WHERE artifact_id = ? AND key = ?").get(i.id, i.key);
+      if (!src) throw new TbError("source_unknown", `the page has no source "${i.key}"`, 404);
+      if (String(src.kind) !== "read") return { key: i.key, status: "not_read", sample: null, rows: null, code: "push_source", configureLink: null };
+      const product = String(src.product);
+      try {
+        const r = (await ctx.callApp(product, String(src.op), JSON.parse(String(src.input_json ?? "{}")) as Json)) as { status: string; output?: Json; holdId?: string };
+        if (r.status === "held") return { key: i.key, status: "held", sample: null, rows: null, code: r.holdId ?? null, configureLink: null };
+        const v = project(r.output ?? null, JSON.parse(String(src.projection_json ?? "{}")));
+        if (v === undefined) return { key: i.key, status: "error", sample: null, rows: null, code: "projection_empty", configureLink: null };
+        const rows = Array.isArray(v) ? v.length : null;
+        return { key: i.key, status: "ok", sample: Array.isArray(v) ? v.slice(0, LIMITS.sampleRows) : v, rows, code: null, configureLink: null };
+      } catch (e) {
+        const code = e instanceof TbError ? e.code : "refresh_error";
+        // scope_denied: the source app does not share that data with this app yet → link to its Configure page
+        return { key: i.key, status: "error", sample: null, rows: null, code, configureLink: code === "scope_denied" ? (ctx as unknown as SdkOpContext).ownerLinkFor(product, "/configure") : null };
+      }
+    },
+  }),
+  [OP.sourceApprove]: op<SourceApproveInput, unknown>({
+    redact: (i) => `page ${i.id} source ${i.key} approved (viewers ${i.viewers ? "on" : "off"})`,
+    async run(i, ctx) {
+      return ctx.db.transaction(() => {
+        const src = ctx.db.prepare("SELECT digest FROM la_source WHERE artifact_id = ? AND key = ?").get(i.id, i.key);
+        if (!src) throw new TbError("source_unknown", `the page has no source "${i.key}"`, 404);
+        if (String(src.digest) !== i.digest) throw new TbError("digest_changed", "this source changed since you looked at it; review it again", 409);
+        ctx.db
+          .prepare("UPDATE la_source SET approved_digest = digest, approved_by = ?, approved_at = ?, viewers = ? WHERE artifact_id = ? AND key = ?")
+          .run(ctx.caller.id, clock(), i.viewers ? 1 : 0, i.id, i.key);
+        return { key: i.key, approved: true, viewers: i.viewers };
+      });
+    },
+  }),
+  [OP.sourceRevoke]: op<SourceRevokeInput, unknown>({
+    redact: (i) => `page ${i.id} source ${i.key} revoked`,
+    async run(i, ctx) {
+      return ctx.db.transaction(() => {
+        const r = ctx.db.prepare("UPDATE la_source SET approved_digest = NULL, approved_by = NULL, approved_at = NULL, viewers = 0 WHERE artifact_id = ? AND key = ?").run(i.id, i.key);
+        if (r.changes === 0) throw new TbError("source_unknown", `the page has no source "${i.key}"`, 404);
+        ctx.db.prepare("DELETE FROM la_snapshot WHERE artifact_id = ? AND key = ?").run(i.id, i.key);
+        return { key: i.key, approved: false };
+      });
+    },
+  }),
+  [OP.triggerApprove]: op<TriggerApproveInput, unknown>({
+    redact: (i) => `page ${i.id} refresh ${i.everySeconds === null ? "off" : `every ${i.everySeconds} s`}`,
+    async run(i, ctx) {
+      const jobs = (ctx as unknown as { jobs: JobsApi }).jobs;
+      const a = artifactRow(ctx.db, i.id);
+      if (!a) throw notFound();
+      const now = clock();
+      const old = a.refresh_job_id === null ? null : String(a.refresh_job_id);
+      if (old) {
+        const j = jobs.get(old);
+        if (j && ["queued", "waiting", "running", "paused"].includes(j.status)) jobs.cancel(old);
+      }
+      if (i.everySeconds === null) {
+        ctx.db.prepare("UPDATE la_artifact SET refresh_approved = 0, refresh_state = 'off', next_refresh_at = NULL, refresh_job_id = NULL WHERE id = ?").run(i.id);
+      } else {
+        if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; restore it first", 409);
+        // enqueued by the OWNER: the schedule does not depend on the agent that made the page (DESIGN O6)
+        const job = jobs.enqueue(REFRESH_JOB, { id: i.id });
+        ctx.db
+          .prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = 1, refresh_state = 'on', consecutive_failures = 0, next_refresh_at = ?, refresh_job_id = ? WHERE id = ?")
+          .run(i.everySeconds, now, job.id, i.id);
+      }
+      ctx.statusChanged();
+      return { id: i.id, refresh: toDetail(ctx.db, artifactRow(ctx.db, i.id) ?? a, now).refresh };
     },
   }),
   [OP.publishVersion]: op<PublishVersionInput, unknown>({
@@ -415,10 +511,46 @@ export const handlers = {
   }),
 } satisfies Record<OpId, HandlerSpec>;
 
+/** One refresh tick of one artifact (SDK handler job). Returns the next run, or ends when the schedule is off. */
+export async function refreshTick(input: Json, ctx: JobContext): Promise<{ status: "done" } | { status: "again"; afterMs: number }> {
+  const id = String((input as { id?: string })?.id ?? "");
+  const a = artifactRow(ctx.db, id);
+  // ends quietly when the page is gone, archived, switched off, or this job is no longer the page's job
+  if (!a || String(a.status) !== "active" || Number(a.refresh_approved) !== 1 || String(a.refresh_job_id) !== ctx.job.id) return { status: "done" };
+  const every = Number(a.refresh_every_s);
+  const now = clock();
+  let next: { state: string; nextAt: number | null } = { state: "on", nextAt: now + every * 1000 };
+  await refreshArtifact(ctx.db, ctx.callApp as never, id, {
+    slot: `s${Math.floor(now / (every * 1000))}`,
+    now: clock,
+    write: (fn) => ctx.checkpoint({ at: now }, fn),
+    after: (o, at) => {
+      next = recordTick(ctx.db, id, o, at);
+    },
+  });
+  ctx.statusChanged();
+  if (next.state === "paused_error" || next.nextAt === null) return { status: "done" };
+  return { status: "again", afterMs: Math.max(1000, next.nextAt - clock()) };
+}
+
 export const definition: SdkAppDefinition = {
   manifest,
   handlers,
   migrations: migrationsDir,
+  jobs: { [REFRESH_JOB]: { run: refreshTick as never, maxAttempts: 3, leaseMs: 120_000, timeoutMs: 5 * 60_000 } },
+  // the page needs the owner when a refresh stopped after repeated failures (L3: a stop is never silent)
+  // An app attention() replaces the SDK's jobs_failed/jobs_stuck default, so this one covers both: pages that stopped after
+  // repeated failures, and approved schedules that are more than 10 minutes overdue (a failed or lost job).
+  async attention(db) {
+    const now = clock();
+    const stopped = Number(db.prepare("SELECT COUNT(*) AS c FROM la_artifact WHERE status = 'active' AND refresh_state = 'paused_error'").get()?.c ?? 0);
+    const overdue = Number(
+      db.prepare("SELECT COUNT(*) AS c FROM la_artifact WHERE status = 'active' AND refresh_approved = 1 AND refresh_state = 'on' AND next_refresh_at < ?").get(now - 600_000)?.c ?? 0,
+    );
+    if (stopped > 0) return { code: "refresh_stopped", reason: `${stopped} live page(s) stopped refreshing after repeated failures` };
+    if (overdue > 0) return { code: "refresh_overdue", reason: `${overdue} live page(s) are more than 10 minutes late to refresh` };
+    return null;
+  },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
