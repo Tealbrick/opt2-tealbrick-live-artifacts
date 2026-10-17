@@ -31,5 +31,6 @@
 .la-source { display: grid; gap: var(--tb-s2); padding: var(--tb-s4); border-radius: var(--tb-radius-brick); background: var(--tb-plate); }
 .la-source h4 { font-size: 1.0625rem; font-weight: var(--tb-weight-label); line-height: 22px; }
 .la-schedule { gap: var(--tb-s2); }
+.split aside section[aria-label="Schedule"] { padding-bottom: var(--tb-s3); } /* the Schedule box has no ruled rows under it, so Links would sit tight against its button */
 
 @media (max-width: 720px) { .la-frame { height: 320px; } }

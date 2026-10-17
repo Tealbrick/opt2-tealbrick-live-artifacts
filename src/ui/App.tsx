@@ -11,6 +11,8 @@ import { SettingsPage } from "./settings.tsx";
 import { AgentsPage, BackupsPage, HoldsPage, portalHref, ReceiptsPage, useHoldList } from "./standard.tsx";
 
 const NAME = "Live Artifacts";
+/** The kit's header colour id for this app is `artifacts` (--tb-app-artifacts); the product id `live-artifacts` has none, which left the neutral header. */
+const COLOUR_ID = "artifacts";
 /** Where scripts/build-ui.ts puts this app's still (`stills/`, next to this module in the hashed asset directory, C61). */
 const STILLS = new URL("./stills/", import.meta.url).href;
 
@@ -38,7 +40,7 @@ export function App() {
   return (
     <AppShell
       title={NAME}
-      colour={appColour("live-artifacts")}
+      colour={appColour(COLOUR_ID)}
       art={appArt("live-artifacts", STILLS)}
       portalHref={portal}
       pages={pages}
