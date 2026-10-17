@@ -45,6 +45,14 @@ beforeEach(async () => {
 });
 
 describe("galleries and access", () => {
+  it("an app caller's page records the VERIFIED product as its origin, not its display name", async () => {
+    const app = { type: "app" as const, id: "ins_01J0000000000000000000000X", name: "Totally Trusted Bank", product: "open-design" };
+    const ctx = ctxFor(db, app as never, { shared: CRUD.contribute }, instances);
+    const out = (await handlers.artifact_create.run({ gallery: "shared", title: "From an app", view: { html: "<p>x</p>" } } as never, ctx)) as { id: string };
+    const row = db.prepare("SELECT origin_kind, origin_ref, created_by_name FROM la_artifact WHERE id = ?").get(out.id);
+    assert.deepEqual([row?.origin_kind, row?.origin_ref], ["app", "open-design"]);
+    assert.equal(row?.created_by_name, "Totally Trusted Bank", "the display name is only a label");
+  });
   it("onStart makes the shared gallery; an agent's first call makes its own; galleries_list shows access levels", async () => {
     assert.deepEqual(instances, [{ type: GALLERY, id: SHARED_GALLERY, label: "Shared", shared: true }]);
     const out = await run("galleries_list", {}, A());

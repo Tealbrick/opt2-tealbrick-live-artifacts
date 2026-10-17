@@ -151,6 +151,9 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
 }
 
 const OWNER_NAME = "Owner";
+/** The calling app as the SDK VERIFIED it (Caller.product, from the signed companionCallers entry; SDK 0.1.27). Never the
+ *  display name, which is the caller's own manifest name. Only provenance: nothing here is decided by a caller's identity. */
+const appProduct = (ctx: Pick<OpContext, "caller">): string => String((ctx.caller as { product?: string }).product ?? "unknown");
 export function actorOf(ctx: Pick<OpContext, "caller">): Actor {
   const c = ctx.caller;
   if (c.type === "person") return { type: "person", id: c.id, name: OWNER_NAME };
@@ -348,7 +351,7 @@ export const handlers = {
           html,
           note: i.note ?? "",
           by,
-          origin: forkedFrom ? { kind: "copy", ref: forkedFrom } : { kind: by.type === "app" ? "app" : "agent", ref: by.type === "app" ? by.name : null },
+          origin: forkedFrom ? { kind: "copy", ref: forkedFrom } : { kind: by.type === "app" ? "app" : "agent", ref: by.type === "app" ? appProduct(ctx) : null },
           forkedFrom,
         },
         clock(),

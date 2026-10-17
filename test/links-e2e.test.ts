@@ -4,6 +4,7 @@
 // public_link, view_origin_missing from the slice, and the viewer route as the SDK serves it (prefix /v/live-artifacts,
 // GET only, headers). Quiet on good and fire on bad: each case asserts the exact status and code.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -282,12 +283,25 @@ describe("links on the real SDK (viewer address present)", () => {
     assert.equal(shell.status, 200);
     assert.match(shell.headers.get("content-security-policy") ?? "", /frame-src https:\/\/views-e2e\.up\.railway\.app\/v\/live-artifacts\/_d\//);
     assert.equal(shell.headers.get("cache-control"), "no-store");
-    const asset = /src="(\/v\/live-artifacts\/_s\/[^"]+\.js)"/.exec(await shell.text())?.[1] ?? "";
-    const js = await b.viewer(asset);
-    assert.equal(js.status, 200, asset);
-    // (SDK 0.1.26 answers these assets `no-store` although the app marks them immutable: its floor wins for cache-control.
-    //  Performance only; not asserted here.)
-    const data = (await (await b.viewer(`/v/live-artifacts/${token}/data`)).json()) as Record<string, any>;
+    // every asset of the shell is content-hashed (the path carries the first 16 hex digits of the sha256 of its body), so the
+    // SDK's immutable caching on /_s/ is safe; the shell, the data and the document are never cached
+    const html = await shell.text();
+    const assets = [...html.matchAll(/(?:src|href)="(\/v\/live-artifacts\/_s\/[^"]+)"/g)].map((m) => m[1] as string);
+    assert.equal(assets.length, 3, "shell script, shell css, tokens css");
+    for (const path of assets) {
+      const res = await b.viewer(path);
+      assert.equal(res.status, 200, path);
+      assert.equal(res.headers.get("cache-control"), "public, max-age=31536000, immutable", path);
+      const body = await res.text();
+      const hash = /([0-9a-f]{16})\.(?:js|css)$/.exec(path)?.[1];
+      assert.equal(hash, createHash("sha256").update(body, "utf8").digest("hex").slice(0, 16), `${path} carries the hash of its own content`);
+    }
+    const missing = await b.viewer("/v/live-artifacts/_s/0000000000000000.js");
+    assert.equal(missing.status, 404);
+    assert.equal(missing.headers.get("cache-control"), "no-store", "an unknown asset is never cached as immutable");
+    const dataRes = await b.viewer(`/v/live-artifacts/${token}/data`);
+    assert.equal(dataRes.headers.get("cache-control"), "no-store");
+    const data = (await dataRes.json()) as Record<string, any>;
     assert.equal(data.title, "Weekly operations");
     const doc = await b.viewer(`/v/live-artifacts/${data.doc}`, { "sec-fetch-dest": "iframe" });
     assert.equal(doc.status, 200, "the SDK's _d gate accepts our sandbox CSP (an unsafe one would be 502)");
