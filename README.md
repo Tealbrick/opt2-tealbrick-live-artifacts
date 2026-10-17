@@ -21,6 +21,8 @@ operation id (`src/app.ts`) and plain migrations (`migrations/`).
 | `src/links.ts` | viewer links: create (caps, expiry, pin), revoke, list, and the texts the owner reads on a hold |
 | `src/viewer.ts` | the viewer route handler (the SDK serves `/v/live-artifacts/…` and strips the prefix), tokens, tickets, CSPs |
 | `src/contract.ts` | the artifact contract (inputs, triggers; later-stage fields refused) and the binding digest |
+| `src/sanitize.ts` | the sanitizer every served agent document passes through (parse5; removes link/base/meta http-equiv/portal/speculation rules and outside URLs; fails closed to a fixed document). One call site: `servedDocument`, used by the viewer. Replaced by the SDK helper when it ships |
+| `SECURITY.md` | what a page can and cannot do, and the accepted residuals R1–R5 |
 | `src/lint.ts` | write-time HTML lint (advice; the boundary is the sandboxed views origin) |
 | `src/limits.ts` | every size and count limit |
 | `tealbrick-conformance.json` | conformance setup fixtures (a page created as agent A for the id-addressed ops, inputs for the link ops) and the A9 waiver |
