@@ -50,6 +50,10 @@ Declare the data in `contract.inputs` (at most 8 sources, each with a `key`):
 - `contract.triggers: [{"kind": "schedule", "everySeconds": 900}]` proposes a refresh schedule (300 to 86400
   seconds). The owner approves it.
 
+Once the owner approved a read source and its schedule, the page refreshes by itself, also after you are gone.
+`live-artifacts__artifact_refresh` (`{id}`) asks for a refresh now (once a minute per page); it returns the status
+of each source (`ok`, `held`, `error`, `paused`, `not_approved`), never the data.
+
 You never get the values that a read source returns. `artifact_get` with `include: ["shape"]` shows the keys,
 types and row counts of the approved data so you can write the page for it. `include: ["data"]` returns only
 data that agents pushed.

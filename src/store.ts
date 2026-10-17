@@ -179,7 +179,9 @@ export function shapeOf(v: unknown, depth = 0): Json {
 /** Shapes of every snapshot of an artifact (live data only). */
 export function shapesOf(db: Db, id: string): Record<string, Json> {
   const out: Record<string, Json> = {};
-  for (const r of db.prepare("SELECT key, data_json FROM la_snapshot WHERE artifact_id = ? AND data_json IS NOT NULL").all(id))
+  for (const r of db
+    .prepare("SELECT n.key, n.data_json FROM la_snapshot n JOIN la_source s ON s.artifact_id = n.artifact_id AND s.key = n.key WHERE n.artifact_id = ? AND n.data_json IS NOT NULL")
+    .all(id))
     out[String(r.key)] = shapeOf(JSON.parse(String(r.data_json)));
   return out;
 }
@@ -352,11 +354,15 @@ function upsertSource(db: Db, id: string, i: ContractInput, now: number): void {
 }
 
 /** Refresh columns for a contract: a schedule waits for the owner; an approved one keeps running if unchanged. */
-function scheduleColumns(contract: Contract, prev?: Row): { every: number | null; approved: number; state: string } {
-  const every = contract.schedule?.everySeconds ?? null;
-  if (every === null) return { every: null, approved: 0, state: "off" };
-  if (prev && Number(prev.refresh_approved) === 1 && Number(prev.refresh_every_s) === every) return { every, approved: 1, state: String(prev.refresh_state) };
-  return { every, approved: 0, state: "waiting_approval" };
+/** Refresh columns for a contract. An approved schedule stays approved (with the OWNER's interval) while the agent's
+ *  proposal is unchanged; a new proposal waits for the owner again (review PR #3, finding 8: compare proposal with
+ *  proposal, never with the owner's lowered value). */
+function scheduleColumns(contract: Contract, prev?: Row): { every: number | null; proposed: number | null; approved: number; state: string } {
+  const proposed = contract.schedule?.everySeconds ?? null;
+  if (proposed === null) return { every: null, proposed: null, approved: 0, state: "off" };
+  if (prev && Number(prev.refresh_approved) === 1 && prev.refresh_proposed_s !== null && Number(prev.refresh_proposed_s) === proposed)
+    return { every: Number(prev.refresh_every_s), proposed, approved: 1, state: String(prev.refresh_state) };
+  return { every: proposed, proposed, approved: 0, state: "waiting_approval" };
 }
 
 export function assertCapacity(db: Db, gallery: string): void {
@@ -387,10 +393,10 @@ export function createArtifact(db: Db, a: CreateArgs, now: number): { id: string
   db.transaction(() => {
     assertCapacity(db, a.gallery);
     db.prepare(
-      `INSERT INTO la_artifact (id, gallery_id, title, description, status, live_version, staged_version, auto_publish, refresh_every_s, refresh_approved, refresh_state,
+      `INSERT INTO la_artifact (id, gallery_id, title, description, status, live_version, staged_version, auto_publish, refresh_every_s, refresh_proposed_s, refresh_approved, refresh_state,
          created_by_type, created_by_id, created_by_name, origin_kind, origin_ref, forked_from, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'active', 1, NULL, 'owner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, a.gallery, a.title, a.description, s.every, s.approved, s.state, a.by.type, a.by.id, a.by.name, a.origin.kind, a.origin.ref, a.forkedFrom, now, now);
+       VALUES (?, ?, ?, ?, 'active', 1, NULL, 'owner', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, a.gallery, a.title, a.description, s.every, s.proposed, s.approved, s.state, a.by.type, a.by.id, a.by.name, a.origin.kind, a.origin.ref, a.forkedFrom, now, now);
     insertVersion(db, id, 1, a.html, a.contract, a.by, a.note, now);
     for (const i of a.contract.inputs) upsertSource(db, id, i, now);
     logActivity(db, id, "artifact.create", a.by, `version 1: ${a.title}`, now);
@@ -416,7 +422,7 @@ export function baseVersion(a: Row): number {
 function applyContract(db: Db, id: string, contract: Contract, prev: Row, now: number): void {
   syncSources(db, id, contract, now);
   const s = scheduleColumns(contract, prev);
-  db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = ?, refresh_state = ? WHERE id = ?").run(s.every, s.approved, s.state, id);
+  db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_proposed_s = ?, refresh_approved = ?, refresh_state = ? WHERE id = ?").run(s.every, s.proposed, s.approved, s.state, id);
 }
 
 export function updateArtifact(db: Db, id: string, u: UpdateArgs, now: number): { version: number; liveVersion: number; staged: boolean } {
@@ -444,7 +450,9 @@ export function updateArtifact(db: Db, id: string, u: UpdateArgs, now: number): 
       else {
         live = version;
         db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = NULL WHERE id = ?").run(version, id);
-        if (contractChanged) applyContract(db, id, contract, a, now);
+        // going live: the sources ALWAYS follow the live version's contract (a contract staged earlier may differ from
+        // the live sources even when this update changes only the HTML; re-review finding 4)
+        applyContract(db, id, contract, a, now);
       }
       pruneVersions(db, id, now);
     }

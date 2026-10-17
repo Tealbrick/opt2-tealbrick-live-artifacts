@@ -1787,6 +1787,109 @@
       "receipt": true
     },
     {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_refresh",
+      "title": "Refresh a live page now",
+      "description": "Ask for a refresh of a live page now (at most once a minute per page). Only sources the owner approved are read. Returns the status of each source, never its data.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "keys": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "status",
+                "fetchedAt",
+                "code"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "held",
+                    "error",
+                    "paused",
+                    "not_approved"
+                  ]
+                },
+                "fetchedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "code": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
       "audience": "person",
       "id": "gallery_view",
       "title": "Gallery",
@@ -2662,7 +2765,7 @@
       "audience": "person",
       "id": "artifact_preview_ticket",
       "title": "Preview a page",
-      "description": "Mint a 10-minute preview link for one version (default: the staged version, else the live one) on the viewer address. Answers view_origin_missing (409) while the bridge has no viewer address.",
+      "description": "Mint a 10-minute preview link for one version (default: the staged version, else the live one) on the viewer address. Send no idempotency key: the URL is a secret and is never stored. Answers view_origin_missing (409) while the bridge has no viewer address.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2715,6 +2818,341 @@
       "effect": "write",
       "idempotency": "supported",
       "receipt": false
+    },
+    {
+      "audience": "person",
+      "id": "source_test",
+      "title": "Test a data source",
+      "description": "One live sample read of a proposed source through this app's read-only grant (first rows only), so the owner sees what the page would get before approving it.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "key"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "status",
+          "sample",
+          "rows",
+          "code",
+          "configureLink"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "held",
+              "error",
+              "paused",
+              "not_read"
+            ]
+          },
+          "sample": {},
+          "rows": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configureLink": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "person",
+      "id": "source_approve",
+      "title": "Approve a data source",
+      "description": "Approve exactly this binding (its digest). viewers = also show its data to people with a viewer link. Refused with digest_changed if the binding changed since the owner looked.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "key",
+          "digest",
+          "viewers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "digest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "viewers": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "approved",
+          "viewers"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "approved": {
+            "type": "boolean"
+          },
+          "viewers": {
+            "type": "boolean"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "source_revoke",
+      "title": "Revoke a data source",
+      "description": "Withdraw the approval of a source and delete its stored data.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "key"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "approved"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "approved": {
+            "type": "boolean"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "trigger_approve",
+      "title": "Approve the refresh schedule",
+      "description": "Approve, change (300 to 86400 seconds) or switch off (null) the refresh schedule of a page; also resumes a page that stopped after repeated failures.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "everySeconds"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "everySeconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 300,
+                "maximum": 86400
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "refresh"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "refresh": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "everySeconds",
+              "lastAt",
+              "nextAt",
+              "state"
+            ],
+            "properties": {
+              "everySeconds": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 300,
+                    "maximum": 86400
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "nextAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "waiting_approval",
+                  "on",
+                  "paused",
+                  "paused_error"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
     },
     {
       "audience": "person",
