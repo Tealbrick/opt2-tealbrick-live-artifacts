@@ -12,8 +12,8 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 | React (`react`) | 19.3.0 | MIT | https://github.com/facebook/react |
 | React DOM (`react-dom`) | 19.3.0 | MIT | https://github.com/facebook/react |
 | `scheduler` | 0.28.0 | MIT | https://github.com/facebook/react |
-| `@opt2-tealbrick/ui` (Tealbrick design system kit: tokens, components, CSS) | 0.2.3 | MIT | https://github.com/Tealbrick/opt2-tealbrick-packages |
-| `@opt2-tealbrick/miniapp-sdk/client` and `@opt2-tealbrick/spec/bridge` (browser modules only) | 0.1.19 / 0.1.26 | MIT | see the next section |
+| `@opt2-tealbrick/ui` (Tealbrick design system kit: tokens, components, CSS) | 0.3.0 | Tealbrick Software Licence 1.1 (proprietary; `vendor/@opt2-tealbrick/ui/LICENSE`, https://tealbrick.com/software-licence) | https://github.com/Tealbrick/opt2-tealbrick-packages |
+| `@opt2-tealbrick/miniapp-sdk/client` and `@opt2-tealbrick/spec/bridge` (browser modules only) | 0.1.25 / 0.1.35 | MIT | see the next section |
 | Nunito (variable font, `vendor/@opt2-tealbrick/ui/dist/fonts/*.woff2`) | 5.3.0 (`@fontsource-variable/nunito`) | SIL Open Font License 1.1 | https://github.com/googlefonts/nunito |
 
 - Nunito is Copyright 2014 The Nunito Project Authors. Its licence text ships next to the font files as
@@ -26,9 +26,9 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 
 | Name | Version | Licence | Source |
 |---|---|---|---|
-| `@opt2-tealbrick/miniapp-sdk` | 0.1.19 | MIT | https://github.com/Tealbrick/opt2-tealbrick-sdk |
+| `@opt2-tealbrick/miniapp-sdk` | 0.1.25 | MIT | https://github.com/Tealbrick/opt2-tealbrick-sdk |
 | `@opt2-tealbrick/manifest` | 0.1.18 | MIT | https://github.com/Tealbrick/opt2-tealbrick-sdk |
-| `@opt2-tealbrick/spec` (dependency of the SDK) | 0.1.26 | MIT | https://github.com/Tealbrick/opt2-tealbrick-specs |
+| `@opt2-tealbrick/spec` (dependency of the SDK and the manifest package) | 0.1.35 / 0.1.31 | MIT | https://github.com/Tealbrick/opt2-tealbrick-specs |
 | `ajv` (dependency of the manifest package) | 8.17.1 | MIT | https://github.com/ajv-validator/ajv |
 | `fast-deep-equal` (ajv) | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal |
 | `fast-uri` (ajv) | 3.1.8 | BSD-3-Clause | https://github.com/fastify/fast-uri |

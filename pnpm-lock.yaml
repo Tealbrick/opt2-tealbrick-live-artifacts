@@ -22,8 +22,8 @@ importers:
         specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.18/opt2-tealbrick-conformance-0.1.18.tgz
         version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-conformance-v0.1.18/opt2-tealbrick-conformance-0.1.18.tgz(react@19.3.0)
       '@opt2-tealbrick/ui':
-        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz
-        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz(react@19.3.0)
+        specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz
+        version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz(react@19.3.0)
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
@@ -146,9 +146,9 @@ packages:
     resolution: {integrity: sha512-orQPbC6043OFhPBLO/BGAJ0bZ2mP0bfqOxcTDjZc5ur9Vo8sQMvRGsE4uRAAlG8xnBQvcIKadgUOG9KNC5W55Q==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.35/opt2-tealbrick-spec-0.1.35.tgz}
     version: 0.1.35
 
-  '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz':
-    resolution: {integrity: sha512-pTGZQQumNimfNwF77jR4wlnswGO+5aR+kvFpBr7YmdjmCsUeTd0KtpHpLzOYnXsmVXNKXKpSN0jtQuooBsBRvw==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz}
-    version: 0.2.4
+  '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz':
+    resolution: {integrity: sha512-UjLmKZ0kNQ9weELFP6pEGzWpp9dqvWCuFvnw7W82codWe9sD49r501NzD6rBjNqHC7qoiAT/WldYIfO9tQGg7Q==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz}
+    version: 0.3.0
     hasBin: true
     peerDependencies:
       react: '>=19'
@@ -432,7 +432,7 @@ snapshots:
 
   '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.35/opt2-tealbrick-spec-0.1.35.tgz': {}
 
-  '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.2.4/opt2-tealbrick-ui-0.2.4.tgz(react@19.3.0)':
+  '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz(react@19.3.0)':
     dependencies:
       react: 19.3.0
 
