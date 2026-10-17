@@ -369,7 +369,7 @@ describe("the owner on the real SDK person route", () => {
     const created = await b.call("artifact_create", PAGE, { held: [], key: "idem-key-create-1" });
     const id = String(created.body.output.id);
     const owner = await b.person();
-    const made = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "idem-key-person-1" });
+    const made = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-1" });
     assert.equal(made.status, 200, JSON.stringify(made.body));
     const out = made.body.output as { linkId: string; url: string; expiresAt: string };
     const token = out.url.split("/").pop() ?? "";
@@ -377,7 +377,7 @@ describe("the owner on the real SDK person route", () => {
     assert.equal(b.links()[0]?.created_by_type, "person");
     assert.equal((await b.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 200);
     // the same request again is the same answer, and no second link
-    const same = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "idem-key-person-1" });
+    const same = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-1" });
     assert.equal(same.body.output.url, out.url);
     assert.equal(b.links().length, 1);
     const list = await owner.op("links_list", {});
@@ -400,7 +400,7 @@ describe("the owner on the real SDK person route", () => {
     const noCsrf = await owner.op("links_list", {}, { csrf: false });
     assert.equal(noCsrf.status, 403);
     assert.equal(noCsrf.body.error.code, "csrf_invalid");
-    const agentOnly = await owner.op("artifact_share", { id, expect: { version: 1, htmlSha256: "x", title: "Second" } }, { key: "idem-key-person-2" });
+    const agentOnly = await owner.op("artifact_share", { id, expect: { version: 1, htmlSha256: "x", title: "Second" } }, { key: "own-2" });
     assert.ok(agentOnly.status >= 400, "artifact_share is an agent op");
     assert.equal(b.links().filter((l) => l.artifact_id === id).length, 0, "none of them made a link");
   });
