@@ -220,8 +220,9 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     hits.length = 0;
     const page = await newPage();
     await page.goto(`${plain.origin}/`).catch(() => {});
-    await page.waitForTimeout(WAIT_MS);
-    await page.close();
+    // the unprotected hostile page may navigate or crash its own tab; what reached the canary is what counts
+    await page.waitForTimeout(WAIT_MS).catch(() => {});
+    await page.close().catch(() => {});
     assert.ok(hits.length >= 5, `control run must leak; canary saw ${hits.length}: ${hits.join(", ")}`);
   });
 

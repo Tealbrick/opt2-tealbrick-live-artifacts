@@ -692,7 +692,7 @@ describe("Review and share: step 3", () => {
     assert.match(dialog.textContent ?? "", /Who may open this page\?/);
     assert.match(dialog.textContent ?? "", /Anyone who has the address can open it until it ends or you revoke it/);
     assert.match(dialog.textContent ?? "", /What a link cannot promise/);
-    assert.match(dialog.textContent ?? "", /the names the page looks up or the set-up of a video call/);
+    assert.match(dialog.textContent ?? "", /In some browsers page code can contact outside sites/);
     assert.match(dialog.textContent ?? "", /Everything the page shows can be copied by whoever sees it/);
     assert.match(dialog.textContent ?? "", /wait for you before link holders see them/);
     assert.match(dialog.textContent ?? "", /1 link of this page is active\. At most 5\./);

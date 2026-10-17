@@ -12,8 +12,8 @@
 // One module, one call site (`servedDocument`, called by the viewer): the shared SDK helper (miniapp-sdk 0.1.29,
 // sanitizeAgentDocument) replaces this file when it ships.
 import { createHash } from "node:crypto";
-import { LIMITS } from "./limits.ts";
 import { type DefaultTreeAdapterMap, defaultTreeAdapter, parse, serialize } from "parse5";
+import { LIMITS } from "./limits.ts";
 
 type Node = DefaultTreeAdapterMap["node"];
 type Parent = DefaultTreeAdapterMap["parentNode"];

@@ -331,7 +331,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 </Notice>
               )}
             </div>
-            <p className="meta">Never enter a password on a shared page. This page cannot send data anywhere.</p>
+            <p className="meta">Never enter a password on a shared page. In some browsers a page can contact outside sites, so do not type private information into it.</p>
           </div>
           <section className="tb-card la-review" aria-label="Review and share">
             <h2>Review and share</h2>
@@ -507,7 +507,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
               <div className="tb-stack">
                 <Failure message={error} />
                 <h3>What data may this page show?</h3>
-                <p className="tb-soft">Page code written by an agent can see this data in the viewer’s browser. It cannot send it anywhere, but a viewer can copy what is on screen.</p>
+                <p className="tb-soft">Page code written by an agent can see this data in the viewer’s browser. In some browsers page code can contact outside sites, so only show data you are happy for a viewer to copy.</p>
                 {detail.sources.length === 0 ? <p className="tb-soft">This page has no data sources.</p> : null}
                 <div className="la-checks">
                   {detail.sources.map((s) => (
