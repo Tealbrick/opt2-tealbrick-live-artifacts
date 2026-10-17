@@ -83,6 +83,8 @@ describe("backup and restore round trip (real SDK)", () => {
     await a.stop();
   });
   after(async () => {
+    // also when `before` failed half way: a running app and its bridge would keep the test process alive for ever
+    await a?.stop();
     await b?.stop();
     rmSync(root, { recursive: true, force: true });
   });

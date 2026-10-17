@@ -120,6 +120,7 @@ export async function boot(viewUrl: string | null, opts: { paused?: boolean; pau
       db.close();
     }
   };
+  let stopped = false;
   return {
     running,
     bridge,
@@ -162,6 +163,8 @@ export async function boot(viewUrl: string | null, opts: { paused?: boolean; pau
     },
     links: () => readDb((db) => db.prepare("SELECT * FROM la_link WHERE kind = 'viewer' ORDER BY created_at").all() as Record<string, unknown>[]),
     async stop() {
+      if (stopped) return; // safe to call twice (a failed `before` leaves it to `after`)
+      stopped = true;
       await running.stop();
       bridge.closeAllConnections();
       await new Promise<void>((r) => bridge.close(() => r()));
