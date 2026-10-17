@@ -92,7 +92,7 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
-import { createPreview, endLinksAfterRestore, ensureDocKey, handleViewer, httpsOrigin, isRestorePending, markRestored, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
+import { createPreview, endLinksAfterRestore, ensureDocKey, handleViewer, httpsOrigin, recordRestore, restoreUnhandled, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
 
 /** The viewer address of the bridge (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). The SDK's requireViewUrl answers 409
  *  view_origin_missing while there is none; it checks only that the string is not empty, so the https host check stays here
@@ -772,10 +772,11 @@ export const definition: SdkAppDefinition = {
   handlers,
   migrations: migrationsDir,
   publicRoutes: { "/v": viewerRoute },
-  // a restore replaces the database with an older one; every link is ended after it (viewer.ts endLinksAfterRestore)
+  // a restore replaces the database with an older one; every link is ended after it (viewer.ts). The hook runs before the store
+  // opens; if it throws, the SDK rolls the restore back.
   backup: {
     async afterRestore() {
-      markRestored();
+      recordRestore(process.env.TB_DATA_DIR);
     },
   },
   jobs: { [REFRESH_JOB]: { run: refreshTick as never, maxAttempts: 3, leaseMs: 120_000, timeoutMs: 5 * 60_000 } },
@@ -796,7 +797,7 @@ export const definition: SdkAppDefinition = {
   },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
-    if (isRestorePending()) endLinksAfterRestore(ctx.db, clock()); // the data was restored from a backup (S3-3)
+    if (restoreUnhandled(ctx.db)) endLinksAfterRestore(ctx.db, clock()); // the data was restored from a backup and this boot has not handled it (S3-3)
     await ensureDocKey(ctx.secrets); // the document-ticket key: created once, kept sealed in the SDK's secret store
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
   },

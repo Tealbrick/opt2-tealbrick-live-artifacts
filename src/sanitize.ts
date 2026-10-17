@@ -20,6 +20,10 @@ type Parent = DefaultTreeAdapterMap["parentNode"];
 type El = DefaultTreeAdapterMap["element"];
 type Txt = DefaultTreeAdapterMap["textNode"];
 
+/** The version of the sanitizer's RULES. Raise it with every change that can alter an output; a stored row with an older version
+ *  is sanitized again at serve time. (1 = the first release; rows from before the column count as 0.) */
+export const SANITIZER_VERSION = 2;
+
 /** The document we serve when a page cannot be made safe. Fixed text, no agent content. */
 export const BLOCKED_DOCUMENT = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Page not shown</title></head><body style="font:15px/1.5 system-ui,sans-serif;margin:24px"><p>This page cannot be shown.</p><p>Ask the owner of the page to check it.</p></body></html>`;
 
@@ -552,47 +556,52 @@ const boundedAdapter: typeof defaultTreeAdapter = {
  *  ones before it (quadratic): 36,000 attributes on one tag cost seconds, on the serve path. Beyond the limits: fail closed. */
 export const SANITIZE_MAX_ATTRS = 256;
 export const SANITIZE_MAX_TAGS = 200_000;
-const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"]);
-const rawEnd = new Map<string, RegExp>();
 const isWs = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+const isAlpha = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+/** Does a tag start (`<a`, `</a`) at `p`? */
+const tagStartsAt = (src: string, p: number): boolean => {
+  const c = src.charCodeAt(p + 1);
+  return isAlpha(c) || (c === 47 && isAlpha(src.charCodeAt(p + 2)));
+};
 
-/** A linear scan of the SOURCE before parse5 sees it (a light copy of the tag syntax: names, attributes, quotes, raw-text
- *  elements). It over-counts rather than under-counts, so a limit is never missed; a bomb throws here, in linear time. */
+/** A linear scan of the SOURCE before parse5 sees it, with NO context: it does not know comments, raw-text elements, svg or math
+ *  (parse5 reads `<style>` inside an svg as markup, and `<!-->` ends a comment at once, so any context rule can be turned against
+ *  the scan). Every `<` + letter starts a tag-like run; the run counts attribute-like tokens until `>`. A quoted value is skipped as
+ *  a whole only when it holds no tag start; a tag start inside ends the run and begins a new one. Over-counting is fine: a page
+ *  that trips a limit (a long script full of `<` comparisons, say) is refused and fails closed. */
 export function precheck(src: string): void {
   const n = src.length;
   let tags = 0;
   let i = 0;
-  for (;;) {
+  while (i < n) {
     i = src.indexOf("<", i);
-    if (i < 0) break;
-    i++;
-    let c = src.charCodeAt(i);
-    const end = c === 47;
-    if (end) c = src.charCodeAt(++i);
-    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) {
-      if (!end && c === 33 && src.startsWith("--", i + 1)) {
-        const e = src.indexOf("-->", i + 3);
-        i = e < 0 ? n : e + 3;
-      }
+    if (i < 0) return;
+    if (!tagStartsAt(src, i)) {
+      i++;
       continue;
     }
     if (++tags > SANITIZE_MAX_TAGS) throw new Error("document has too many tags");
-    let j = i;
-    while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 47 && src.charCodeAt(j) !== 62) j++;
-    const name = src.slice(i, j).toLowerCase();
+    let j = i + (src.charCodeAt(i + 1) === 47 ? 2 : 1);
+    while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 47 && src.charCodeAt(j) !== 62 && !(src.charCodeAt(j) === 60 && tagStartsAt(src, j))) j++;
     let attrs = 0;
+    let next = -1; // where the next run starts, when a tag start ended this one
     for (;;) {
       while (j < n && (isWs(src.charCodeAt(j)) || src.charCodeAt(j) === 47)) j++;
       if (j >= n) break;
-      if (src.charCodeAt(j) === 62) {
+      const c = src.charCodeAt(j);
+      if (c === 62) {
         j++;
+        break;
+      }
+      if (c === 60 && tagStartsAt(src, j)) {
+        next = j;
         break;
       }
       if (++attrs > SANITIZE_MAX_ATTRS) throw new Error("a tag has too many attributes");
       j++;
       while (j < n) {
         const d = src.charCodeAt(j);
-        if (isWs(d) || d === 47 || d === 62 || d === 61) break;
+        if (isWs(d) || d === 47 || d === 62 || d === 61 || (d === 60 && tagStartsAt(src, j))) break;
         j++;
       }
       while (j < n && isWs(src.charCodeAt(j))) j++;
@@ -602,23 +611,19 @@ export function precheck(src: string): void {
       const q = src.charCodeAt(j);
       if (q === 34 || q === 39) {
         const e = src.indexOf(q === 34 ? '"' : "'", j + 1);
+        const limit = e < 0 ? n : e;
+        let lt = src.indexOf("<", j + 1);
+        while (lt >= 0 && lt < limit && !tagStartsAt(src, lt)) lt = src.indexOf("<", lt + 1);
+        if (lt >= 0 && lt < limit) {
+          next = lt; // a tag start inside the quotes: do not skip it
+          break;
+        }
         j = e < 0 ? n : e + 1;
       } else {
-        while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 62) j++;
+        while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 62 && !(src.charCodeAt(j) === 60 && tagStartsAt(src, j))) j++;
       }
     }
-    i = j;
-    if (!end && RAW_TEXT_TAGS.has(name)) {
-      if (name === "plaintext") return;
-      let re = rawEnd.get(name);
-      if (!re) {
-        re = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi");
-        rawEnd.set(name, re);
-      }
-      re.lastIndex = i;
-      const m = re.exec(src);
-      i = m ? m.index : n;
-    }
+    i = next >= 0 ? next : j;
   }
 }
 
@@ -685,7 +690,8 @@ export function sanitizeForStore(html: string): { full: Buffer; runsScripts: boo
   return { full: Buffer.from(r.html, "utf8"), runsScripts: r.runsScripts, plain };
 }
 const bytesText = (b: unknown): string => Buffer.from(b as Uint8Array).toString("utf8");
-const isStored = (row: Record<string, unknown>): boolean => row.served_html !== null && row.served_html !== undefined && row.served_runs_scripts !== null && row.served_runs_scripts !== undefined;
+const isStored = (row: Record<string, unknown>): boolean =>
+  row.served_html !== null && row.served_html !== undefined && row.served_runs_scripts !== null && row.served_runs_scripts !== undefined && Number(row.sanitizer_version ?? 0) === SANITIZER_VERSION;
 
 /** The sanitized document of a stored version, scripts allowed, and whether it runs scripts: the result stored when the version
  *  was written, else (an older row, a restore) sanitized now. Fails closed to the fixed document (no scripts). */
@@ -693,6 +699,8 @@ export function versionServed(row: Record<string, unknown>): Served {
   if (isStored(row)) return { html: bytesText(row.served_html), runsScripts: Number(row.served_runs_scripts) === 1 };
   return servedDocumentInfo(bytesText(row.html));
 }
+/** Kept for the S6 name: the sanitized document of a stored version, scripts allowed. */
+export const servedDocumentOf = (row: Record<string, unknown>): string => versionServed(row).html;
 /** The scriptless variant of a stored version (the page itself when it runs no scripts). */
 export function versionPlain(row: Record<string, unknown>): string {
   if (isStored(row)) {

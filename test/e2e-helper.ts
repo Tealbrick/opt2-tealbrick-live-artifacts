@@ -103,13 +103,21 @@ export async function boot(viewUrl: string | null, opts: { paused?: boolean; pau
   bridgePort = (bridge.address() as { port: number }).port;
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "la-links-e2e-"));
   setDocKey(null);
+  // a real deployment has TB_DATA_DIR in the process environment; the app's afterRestore hook reads it there
+  process.env.TB_DATA_DIR = dir;
   const running = await startApp(
     defineApp(definition),
     { TB_INSTANCE_ID: w.ins, TB_ENROL_CODE: "tbe_e2e", TB_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, TB_PORTAL_KEYS: JSON.stringify({ keys: [portal.publicJwk] }), TB_DATA_DIR: dir, TB_DATA_EPHEMERAL: "1", TB_LOG_LEVEL: "error", ...opts.env },
     { portalRootKeys: [root.publicJwk], port: 0 } as Parameters<typeof startApp>[2],
   );
   for (let i = 0; i < 200 && running.status() !== "ok"; i++) await new Promise((r) => setTimeout(r, 25));
-  assert.equal(running.status(), "ok");
+  if (running.status() !== "ok") {
+    // do not leave the app and the fake bridge listening when the boot failed (a hung test process)
+    await running.stop().catch(() => {});
+    bridge.closeAllConnections();
+    await new Promise<void>((r) => bridge.close(() => r()));
+    throw new Error(`the app did not become ok: ${running.status()}`);
+  }
   const owner = { type: "person", id: w.per, ws: w.ws, instance: w.ins } as PersonPrincipal;
   const base = `http://127.0.0.1:${running.port}`;
   const readDb = <T>(fn: (db: DatabaseSync) => T): T => {

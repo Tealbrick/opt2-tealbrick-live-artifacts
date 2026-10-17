@@ -31,6 +31,19 @@ function dump(dbFile: string): Record<string, string[]> {
 }
 /** the deploy recipe sets one TB_KEK for the deployment; sealed values (the document-ticket key, sealed answers) open after a restore only with the same one */
 const KEK = randomBytes(32).toString("base64url");
+/** wait until the app recorded that it handled the restore (la_setting restore_handled) */
+async function handled(dir: string): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    const db = new DatabaseSync(join(dir, "app.db"), { readOnly: true });
+    try {
+      if (db.prepare("SELECT 1 FROM la_setting WHERE key = 'restore_handled'").get()) return;
+    } finally {
+      db.close();
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error("the restore was not handled in 5 s");
+}
 const PAGE = { title: "Weekly operations", view: { html: "<!doctype html><html><body><h1>v1</h1></body></html>" } };
 
 describe("backup and restore round trip (real SDK)", () => {
@@ -174,14 +187,17 @@ describe("backup and restore round trip (real SDK)", () => {
 
   it("restoring into a fresh deployment brings back every la_ table row for row, except that every link is ended (a link revoked after the backup stays dead)", async () => {
     b = await boot(VIEWS, { dir: dirB, keepDir: true, world: a.w, env: { TB_BACKUP_DIR: backupDir, TB_KEK: KEK, TB_RESTORE_FROM: archive } });
+    await handled(dirB); // onStart ends the links shortly after the app is up
     const after = dump(join(dirB, "app.db"));
     assert.deepEqual(Object.keys(after).sort(), Object.keys(beforeDump).sort());
     const noRevoked = (rows: string[] | undefined): string[] => (rows ?? []).map((r) => JSON.stringify({ ...(JSON.parse(r) as object), revoked_at: null })).sort();
     for (const t of Object.keys(beforeDump)) {
       if (t === "la_link") assert.deepEqual(noRevoked(after[t]), noRevoked(beforeDump[t]), "the links are the same rows, apart from revoked_at");
+      else if (t === "la_setting") assert.deepEqual((after[t] ?? []).filter((r) => !/restore_(pending|handled)/.test(r)), beforeDump[t], "settings are kept; the two restore markers are new");
       else if (t === "la_activity") for (const r of beforeDump[t] ?? []) assert.ok(after[t]?.includes(r), "every activity row is kept");
       else assert.deepEqual(after[t], beforeDump[t], `table ${t} differs after restore`);
     }
+    assert.ok((after.la_setting ?? []).some((r) => /restore_handled/.test(r)), "the app recorded that it handled the restore");
     for (const r of after.la_link ?? []) assert.notEqual((JSON.parse(r) as { revoked_at: unknown }).revoked_at, null, "every link is ended after a restore");
     assert.ok((after.la_activity ?? []).some((r) => /ended because the data was restored/.test(r)), "the page's activity says why");
     for (const t of ["la_artifact", "la_version", "la_snapshot", "la_source", "la_link", "la_view_day", "la_hold_flag"]) assert.ok((beforeDump[t] ?? []).length > 0, `${t} had rows to carry`);
@@ -204,5 +220,35 @@ describe("backup and restore round trip (real SDK)", () => {
     const hold = b.hold(holdId);
     assert.equal(holdBefore.status, "approved", "in the backup the flagged hold was approved");
     assert.ok(["approved", "failed"].includes(hold.status), `the hold came back (${hold.status}); it never ran: no link below`);
+  });
+
+  it("a crash after the restore and before the app wrote its handled marker: on the next start every viewer link still ends", async () => {
+    assert.ok(b, "restored deployment B exists");
+    await b?.stop();
+    b = undefined;
+    // the state after a crash between afterRestore and the app's handling: the SDK's marker is there, the app's is not, and the
+    // restored links are alive again as in the backup
+    const db = new DatabaseSync(join(dirB, "app.db"));
+    try {
+      assert.ok(db.prepare("SELECT value FROM la_setting WHERE key = 'restore_pending'").get(), "the afterRestore hook wrote the pending marker");
+      db.exec("DELETE FROM la_setting WHERE key = 'restore_handled'");
+      db.exec("UPDATE la_link SET revoked_at = NULL WHERE kind = 'viewer'");
+      assert.ok(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE revoked_at IS NULL").get()?.c) > 0, "links are alive in the crashed state");
+    } finally {
+      db.close();
+    }
+    const c = await boot(VIEWS, { dir: dirB, keepDir: true, world: a.w, env: { TB_BACKUP_DIR: backupDir, TB_KEK: KEK } });
+    try {
+      assert.equal((await c.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 404, "the link stays dead");
+      const check = new DatabaseSync(join(dirB, "app.db"), { readOnly: true });
+      try {
+        assert.equal(Number(check.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL").get()?.c), 0, "every viewer link ended");
+        assert.ok(check.prepare("SELECT value FROM la_setting WHERE key = 'restore_handled'").get(), "and the app recorded that");
+      } finally {
+        check.close();
+      }
+    } finally {
+      await c.stop();
+    }
   });
 });

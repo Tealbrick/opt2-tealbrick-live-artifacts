@@ -4,7 +4,8 @@ import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, isRestorePending, markRestored, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
+import { SANITIZER_VERSION } from "../src/sanitize.ts";
+import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, restoreUnhandled, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -278,28 +279,35 @@ describe("scriptless render (C239)", () => {
 });
 
 describe("after a restore every link is ended (S6 review S3-3)", () => {
-  it("until the app recorded the restore no link opens; then every link and preview is ended once, with a note on the page", async () => {
+  const sdkRestored = (marker: string): void => {
+    db.prepare("INSERT INTO la_setting (key, value) VALUES ('restore_pending', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(marker); // what the afterRestore hook writes
+  };
+  it("until the app handled the restore marker no link opens; then every link and preview is ended once, with a note on the page", async () => {
     const id = await page();
     const a1 = link(id);
     const a2 = link(id);
     const prev = link(id, { kind: "preview" });
     const gone = link(id, { revoked: true });
     assert.equal(get(`/v/live-artifacts/${a1}`).status, 200);
-    markRestored();
-    try {
-      assert.ok(isRestorePending());
-      for (const t of [a1, a2, prev, gone]) assert.equal(get(`/v/live-artifacts/${t}`).status, 404, "nothing opens while the restore is pending");
-      assert.equal(endLinksAfterRestore(db, now), 2, "two active viewer links were ended");
-    } finally {
-      assert.ok(!isRestorePending());
-    }
+    assert.ok(!restoreUnhandled(db), "no restore: nothing to handle");
+    sdkRestored("restore-1");
+    assert.ok(restoreUnhandled(db));
+    for (const t of [a1, a2, prev, gone]) assert.equal(get(`/v/live-artifacts/${t}`).status, 404, "nothing opens while the restore is unhandled");
+    assert.equal(endLinksAfterRestore(db, now), 2, "two active viewer links were ended");
+    assert.ok(!restoreUnhandled(db), "handled, in the same transaction");
     for (const t of [a1, a2, prev, gone]) assert.equal(get(`/v/live-artifacts/${t}`).status, 404);
     assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'preview'").get()?.c), 0);
     assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL").get()?.c), 0);
     assert.match(String(db.prepare("SELECT summary FROM la_activity WHERE artifact_id = ? AND by_id = 'restore'").get(id)?.summary), /2 link\(s\) ended because the data was restored/);
     assert.equal(endLinksAfterRestore(db, now), 0, "nothing more to end");
-    // a link made after the restore works
-    assert.equal(get(`/v/live-artifacts/${link(id)}`).status, 200);
+    // a link made after the restore works, and stays alive on the next start (the marker is handled)
+    const fresh = link(id);
+    assert.equal(get(`/v/live-artifacts/${fresh}`).status, 200);
+    assert.ok(!restoreUnhandled(db));
+    // a SECOND restore (another marker) ends links again
+    sdkRestored("restore-2");
+    assert.equal(get(`/v/live-artifacts/${fresh}`).status, 404);
+    assert.equal(endLinksAfterRestore(db, now), 1);
   });
 });
 
@@ -321,6 +329,23 @@ describe("sanitized once at write time, stored per version (S6 review)", () => {
     // proof that the stored text is what is served (not a fresh sanitize): a marker only the column has
     db.prepare("UPDATE la_version SET served_html = ? WHERE artifact_id = ? AND n = 2").run(Buffer.from("<!DOCTYPE html><html><head></head><body>FROM-THE-COLUMN</body></html>"), id);
     assert.ok((await get(await docPath(tok)).text()).includes("FROM-THE-COLUMN"));
+  });
+  it("a stored row from an OLDER sanitizer version is sanitized again at serve time, so a fix reaches stored pages", async () => {
+    const id = await page();
+    // what an older sanitizer let through and the current rules remove (<fencedframe>), stored under the old version
+    const stale = '<!DOCTYPE html><html><head></head><body><p>kept</p><fencedframe src="https://x.test/f"></fencedframe></body></html>';
+    db.prepare("UPDATE la_version SET html = ?, served_html = ?, sanitizer_version = 1 WHERE artifact_id = ? AND n = 1").run(Buffer.from(stale), Buffer.from(stale), id);
+    const tok = link(id);
+    const html = await get(await docPath(tok)).text();
+    assert.ok(html.includes("<p>kept</p>") && !html.includes("fencedframe") && !html.includes("x.test"), html);
+    // a row from before the column existed (NULL) is also sanitized again
+    db.prepare("UPDATE la_version SET sanitizer_version = NULL WHERE artifact_id = ? AND n = 1").run(id);
+    assert.ok(!(await get(await docPath(tok)).text()).includes("fencedframe"));
+    // the current version is trusted: the stored text is served as it is
+    db.prepare("UPDATE la_version SET sanitizer_version = ? WHERE artifact_id = ? AND n = 1").run(SANITIZER_VERSION, id);
+    assert.ok((await get(await docPath(tok)).text()).includes("fencedframe"), "a stored row of the current version is not sanitized again (that is the point of storing it)");
+    // a new write carries the current version
+    assert.equal(Number(db.prepare("SELECT sanitizer_version FROM la_version WHERE artifact_id = ? AND n = 1").get(await page())?.sanitizer_version), SANITIZER_VERSION);
   });
   it("a row without the stored result (older row, restore) is sanitized at serve time", async () => {
     const id = await page();
