@@ -79,7 +79,7 @@ export function srcsetUrls(value: string): string[] {
 /** Attributes whose value is a URL that a browser may load or navigate to. */
 const URL_ATTRS = new Set([
   "src", "href", "xlink:href", "srcset", "imagesrcset", "action", "formaction", "ping", "poster", "background", "data",
-  "lowsrc", "dynsrc", "longdesc", "manifest", "codebase", "icon", "profile",
+  "lowsrc", "dynsrc", "longdesc", "manifest", "codebase", "icon", "profile", "archive", "cite", "usemap", "classid", "srcdoc",
 ]);
 /** (element, attribute) pairs that only navigate on a user action: a bad value removes the ATTRIBUTE, the element stays. */
 const LINK_ATTRS: Record<string, ReadonlySet<string>> = {
@@ -95,7 +95,7 @@ const LOADERS = new Set(["img", "image", "video", "audio", "source", "track", "i
 /** Attributes that hold CSS (a `style` attribute and the SVG presentation attributes that accept `url()`). */
 const CSS_ATTRS = new Set(["style", "fill", "stroke", "filter", "mask", "clip-path", "marker", "marker-start", "marker-mid", "marker-end", "cursor", "clip", "list-style-image", "background-image", "mask-image"]);
 /** Elements removed with everything in them, whatever their attributes. */
-const REMOVE_ELEMENTS = new Set(["link", "base", "portal", "iframe", "frame", "frameset", "object", "embed", "applet", "noscript", "noembed", "noframes", "isindex"]);
+const REMOVE_ELEMENTS = new Set(["link", "base", "portal", "iframe", "frame", "frameset", "object", "embed", "applet", "noscript", "noembed", "noframes", "isindex", "fencedframe"]);
 const SMIL = new Set(["set", "animate", "animatetransform", "animatemotion", "animatecolor"]);
 
 function urlBad(attr: string, value: string): boolean {
@@ -106,13 +106,16 @@ function urlBad(attr: string, value: string): boolean {
 
 // ───────────────────────────────────────────────────────────────────────── CSS
 
-const CSS_IMAGE_FUNCS = new Set(["image-set", "-webkit-image-set", "cross-fade", "-webkit-cross-fade", "image", "src"]);
+const CSS_IMAGE_FUNCS = new Set(["image-set", "-webkit-image-set", "-moz-image-set", "cross-fade", "-webkit-cross-fade", "image", "src"]);
 const CSS_SUBSTITUTIONS = new Set(["var", "attr", "env", "if", "first-valid"]);
 const BLOCKED_FUNC = "x-blocked";
 
-export function unescapeCss(s: string): string {
-  if (!s.includes("\\")) return s;
-  return s.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\f]?|([\s\S]))/g, (_m, hex?: string, ch?: string) => {
+/** CSS preprocessing: CR, CRLF and FF are newlines (css-syntax §3.3). Every newline test below then needs only LF. */
+const cssNewlines = (s: string): string => (/[\r\f]/.test(s) ? s.replace(/\r\n?|\f/g, "\n") : s);
+
+export function unescapeCss(input: string): string {
+  if (!input.includes("\\")) return input;
+  return cssNewlines(input).replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\f]?|([\s\S]))/g, (_m, hex?: string, ch?: string) => {
     if (hex !== undefined) {
       const cp = Number.parseInt(hex, 16);
       return cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? "�" : String.fromCodePoint(cp);
@@ -152,16 +155,21 @@ function identStartsAt(css: string, i: number): boolean {
   }
   return false;
 }
-/** End of a string token starting at the quote at `i`. */
+/** Set by `stringEnd`: did the last string end at its closing quote? (false = a bad string, or the end of the text) */
+let lastStringClosed = true;
+/** End of a string token starting at the quote at `i`. A newline ends it WITHOUT a closing quote (a bad string). */
 function stringEnd(css: string, i: number): number {
   const q = css.charCodeAt(i);
   const n = css.length;
   let p = i + 1;
+  lastStringClosed = false;
   while (p < n) {
     const c = css.charCodeAt(p);
     if (c === 92) p += 2;
-    else if (c === q) return p + 1;
-    else if (c === 10) return p; // bad string: ends before the newline
+    else if (c === q) {
+      lastStringClosed = true;
+      return p + 1;
+    } else if (c === 10) return p; // bad string: ends before the newline
     else p++;
   }
   return n;
@@ -201,8 +209,10 @@ interface Edit {
 /** Neutralise every way CSS can load a URL that is not `data:` or relative: `url()` (any spelling, escapes decoded),
  *  `@import` (dropped), strings inside `image-set()`/`src()`/`cross-fade()`, `var()`/`attr()` inside those, and the typed
  *  `attr(… type(<url>))`. An outside URL becomes `url("data:,")`. Linear time. */
-export function sanitizeCss(css: string): CssResult {
+export function sanitizeCss(input: string): CssResult {
+  const css = cssNewlines(input);
   const n = css.length;
+  let bad = false; // a bad string or a bad url token: the browser and this scanner may disagree about what follows, so the CSS goes
   const edits: Edit[] = [];
   const stack: { img: boolean; from: number; to: number; renamed: boolean }[] = [];
   const imgOpen: { from: number; to: number; renamed: boolean }[] = [];
@@ -221,6 +231,7 @@ export function sanitizeCss(css: string): CssResult {
     }
     if (c === 34 || c === 39) {
       const end = stringEnd(css, i);
+      if (!lastStringClosed) bad = true;
       if (imgOpen.length > 0) {
         const value = unescapeCss(css.slice(i + 1, css.charCodeAt(end - 1) === c && end - 1 > i ? end - 1 : end));
         if (classifyUrl(value) !== "ok") edits.push({ from: i, to: end, repl: '"data:,"' });
@@ -267,11 +278,25 @@ export function sanitizeCss(css: string): CssResult {
           let close: number;
           if (css.charCodeAt(p) === 34 || css.charCodeAt(p) === 39) {
             const se = stringEnd(css, p);
+            if (!lastStringClosed) bad = true;
             value = unescapeCss(css.slice(p + 1, css.charCodeAt(se - 1) === css.charCodeAt(p) && se - 1 > p ? se - 1 : se));
             close = parenEnd(css, end);
           } else {
             let q = p;
-            while (q < n && css.charCodeAt(q) !== 41) q += css.charCodeAt(q) === 92 ? 2 : 1;
+            let sawSpace = false;
+            while (q < n && css.charCodeAt(q) !== 41) {
+              const d = css.charCodeAt(q);
+              if (d === 92) {
+                if (sawSpace) bad = true;
+                q += 2;
+                continue;
+              }
+              if (d === 34 || d === 39 || d === 40 || d < 9 || d === 11 || (d > 13 && d < 32) || d === 127) bad = true; // not allowed in an unquoted url
+              if (d === 32 || d === 9 || d === 10) sawSpace = true;
+              else if (sawSpace) bad = true; // text after the space: not a url token
+              q++;
+            }
+            if (q >= n) bad = true; // unterminated
             value = unescapeCss(css.slice(p, Math.min(q, n)).trim());
             close = Math.min(q + 1, n);
           }
@@ -316,7 +341,8 @@ export function sanitizeCss(css: string): CssResult {
     }
     i++;
   }
-  if (edits.length === 0) return { text: css, blocked: 0 };
+  if (bad) return { text: "", blocked: edits.length + 1 };
+  if (edits.length === 0) return { text: input, blocked: 0 };
   edits.sort((a, b) => a.from - b.from);
   const parts: string[] = [];
   let last = 0;
@@ -381,7 +407,9 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
       rewritten = true;
       continue;
     }
-    if (CSS_ATTRS.has(key)) {
+    if (CSS_ATTRS.has(key) || (el.namespaceURI === SVG_NS && /[(@\\]/.test(a.value))) {
+      // an SVG element: EVERY attribute is read as CSS (shape-inside, mask, filter … and the next one a browser adds); a value
+      // without a paren, an at-sign or a backslash cannot name a url
       const r = sanitizeCss(a.value);
       if (r.blocked > 0) {
         note(f, "css-url");
@@ -430,6 +458,7 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
  *  the HTML namespace), templates, selects, forms, plaintext). A page that has none of them is verified only when it is within the version size cap. */
 const ROUND_TRIP_RISK = new Set(["template", "select", "form", "plaintext", "xmp", "listing"]);
 const HTML_NS = "http://www.w3.org/1999/xhtml";
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolean }): void {
   const stack: Parent[] = [root];
@@ -466,25 +495,104 @@ const securityCount = (f: Findings): number => [...f.values()].reduce((a, b) => 
 
 /** The default tree adapter, plus a depth check on every insertion (parse5 calls these as it builds the tree). */
 const depthOf = new WeakMap<object, number>();
+/** A node's depth; a <template> keeps its children in .content, one level below the template (set here, because the content is
+ *  created before the template is attached). */
+function setDepth(node: object, d: number): void {
+  depthOf.set(node, d);
+  const content = (node as { content?: object }).content;
+  if (content) depthOf.set(content, d + 1);
+}
 const boundedAdapter: typeof defaultTreeAdapter = {
   ...defaultTreeAdapter,
   appendChild(parent, child) {
     const d = (depthOf.get(parent) ?? 0) + 1;
     if (d > SANITIZE_MAX_DEPTH) throw new Error("document nests too deeply");
-    depthOf.set(child, d);
+    setDepth(child, d);
     defaultTreeAdapter.appendChild(parent, child);
   },
   setTemplateContent(template, content) {
-    depthOf.set(content, depthOf.get(template) ?? 0);
+    depthOf.set(content, (depthOf.get(template) ?? 0) + 1);
     defaultTreeAdapter.setTemplateContent(template, content);
   },
   insertBefore(parent, child, reference) {
     const d = (depthOf.get(parent) ?? 0) + 1;
     if (d > SANITIZE_MAX_DEPTH) throw new Error("document nests too deeply");
-    depthOf.set(child, d);
+    setDepth(child, d);
     defaultTreeAdapter.insertBefore(parent, child, reference);
   },
 };
+/** At most this many attributes on one tag and this many tags in a document. parse5 checks every new attribute against the
+ *  ones before it (quadratic): 36,000 attributes on one tag cost seconds, on the serve path. Beyond the limits: fail closed. */
+export const SANITIZE_MAX_ATTRS = 256;
+export const SANITIZE_MAX_TAGS = 200_000;
+const RAW_TEXT_TAGS = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext"]);
+const rawEnd = new Map<string, RegExp>();
+const isWs = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+
+/** A linear scan of the SOURCE before parse5 sees it (a light copy of the tag syntax: names, attributes, quotes, raw-text
+ *  elements). It over-counts rather than under-counts, so a limit is never missed; a bomb throws here, in linear time. */
+export function precheck(src: string): void {
+  const n = src.length;
+  let tags = 0;
+  let i = 0;
+  while ((i = src.indexOf("<", i)) >= 0) {
+    i++;
+    let c = src.charCodeAt(i);
+    const end = c === 47;
+    if (end) c = src.charCodeAt(++i);
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) {
+      if (!end && c === 33 && src.startsWith("--", i + 1)) {
+        const e = src.indexOf("-->", i + 3);
+        i = e < 0 ? n : e + 3;
+      }
+      continue;
+    }
+    if (++tags > SANITIZE_MAX_TAGS) throw new Error("document has too many tags");
+    let j = i;
+    while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 47 && src.charCodeAt(j) !== 62) j++;
+    const name = src.slice(i, j).toLowerCase();
+    let attrs = 0;
+    for (;;) {
+      while (j < n && (isWs(src.charCodeAt(j)) || src.charCodeAt(j) === 47)) j++;
+      if (j >= n) break;
+      if (src.charCodeAt(j) === 62) {
+        j++;
+        break;
+      }
+      if (++attrs > SANITIZE_MAX_ATTRS) throw new Error("a tag has too many attributes");
+      j++;
+      while (j < n) {
+        const d = src.charCodeAt(j);
+        if (isWs(d) || d === 47 || d === 62 || d === 61) break;
+        j++;
+      }
+      while (j < n && isWs(src.charCodeAt(j))) j++;
+      if (src.charCodeAt(j) !== 61) continue;
+      j++;
+      while (j < n && isWs(src.charCodeAt(j))) j++;
+      const q = src.charCodeAt(j);
+      if (q === 34 || q === 39) {
+        const e = src.indexOf(q === 34 ? '"' : "'", j + 1);
+        j = e < 0 ? n : e + 1;
+      } else {
+        while (j < n && !isWs(src.charCodeAt(j)) && src.charCodeAt(j) !== 62) j++;
+      }
+    }
+    i = j;
+    if (!end && RAW_TEXT_TAGS.has(name)) {
+      if (name === "plaintext") return;
+      let re = rawEnd.get(name);
+      if (!re) {
+        re = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi");
+        rawEnd.set(name, re);
+      }
+      re.lastIndex = i;
+      const m = re.exec(src);
+      i = m ? m.index : n;
+    }
+  }
+}
+
 const parseBounded = (html: string) => parse(html, { scriptingEnabled: true, treeAdapter: boundedAdapter });
 
 export interface Sanitized {
@@ -496,6 +604,7 @@ export interface Sanitized {
 /** Sanitize one agent document. Throws on any failure; use `servedDocument` to fail closed. */
 export function sanitizeHtml(input: string): Sanitized {
   if (input.length > SANITIZE_MAX_BYTES) throw new Error("document too large to sanitize");
+  precheck(input);
   const f: Findings = new Map();
   const doc = parseBounded(input);
   const risk = { risky: false };
@@ -506,8 +615,11 @@ export function sanitizeHtml(input: string): Sanitized {
   // when its tree has a shape known to change on a round trip. The check costs one more parse.
   if (input.length <= LIMITS.htmlBytes || risk.risky) {
     const again: Findings = new Map();
-    walk(parseBounded(html), false, again);
+    const reparsed = parseBounded(html);
+    walk(reparsed, false, again);
     if (securityCount(again) > 0) throw new Error(`sanitized output is not stable: ${[...again.keys()].join(",")}`);
+    // a fixed point: parse and serialize of the output give the same text, so the browser builds the tree we checked
+    if (serialize(reparsed) !== html) throw new Error("sanitized output changes when it is parsed again");
   }
   return { html, findings: Object.fromEntries(f) };
 }

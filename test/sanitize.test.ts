@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parse } from "parse5";
-import { BLOCKED_DOCUMENT, classifyUrl, clearSanitizeCache, SANITIZE_MAX_BYTES, sanitizeCss, sanitizeHtml, servedDocument, srcsetUrls } from "../src/sanitize.ts";
+import { BLOCKED_DOCUMENT, classifyUrl, clearSanitizeCache, precheck, SANITIZE_MAX_ATTRS, SANITIZE_MAX_BYTES, sanitizeCss, sanitizeHtml, servedDocument, srcsetUrls } from "../src/sanitize.ts";
 
 const clean = (html: string): string => sanitizeHtml(html).html;
 const body = (html: string): string => clean(html).replace(/^.*?<body>/s, "").replace(/<\/body><\/html>$/s, "");
@@ -260,6 +260,71 @@ describe("sanitizer: CSS", () => {
     assert.ok(!has('<svg><rect fill="url(http://x.test/a.svg#g)" mask="url(//x.test/m.svg#m)"/></svg>', /x\.test/));
     assert.ok(has('<svg><rect fill="url(#g)"/></svg>', /fill="url\(#g\)"/));
     assert.ok(!has('<svg><style>@import url(//x.test/a.css)</style></svg>', /x\.test/), "svg style with text only");
+  });
+});
+
+describe("sanitizer: review fixes (S6 review)", () => {
+  it("CSS: CR, FF and LF all end a bad string, so nothing after them is hidden (style attribute, <style>, @import)", () => {
+    for (const nl of ["&#12;", "&#13;", "&#10;", "\u000c", "\r", "\n", "\r\n"]) {
+      const attr = clean(`<div style="content:'x${nl};background:url(//evil.test/a)'">t</div>`);
+      assert.ok(!attr.includes("evil.test"), `attribute ${JSON.stringify(nl)}: ${attr}`);
+      const el = clean(`<style>a{content:'x${nl.startsWith("&") ? String.fromCodePoint(Number(nl.slice(2, -1))) : nl};background:url(//evil.test/a)'}</style>`);
+      assert.ok(!el.includes("evil.test"), `style ${JSON.stringify(nl)}: ${el}`);
+      const imp = clean(`<style>@media x{a{content:'x${nl.startsWith("&") ? String.fromCodePoint(Number(nl.slice(2, -1))) : nl}'}}@import url(//evil.test/b.css);</style>`);
+      assert.ok(!imp.includes("evil.test"), `import ${JSON.stringify(nl)}: ${imp}`);
+    }
+  });
+  it("CSS: any bad string or bad url token drops the whole CSS value (fail closed)", () => {
+    for (const css of ["a{content:'x\nb}", 'a{content:"unterminated', "a{background:url(a b.png)}", "a{background:url(a\"b.png)}", "a{background:url(a(b.png)}", "a{background:url(unterminated", "a{background:url('x\ny')}"]) {
+      const r = sanitizeCss(css);
+      assert.equal(r.text, "", css);
+      assert.ok(r.blocked > 0, css);
+    }
+    for (const css of ["a{content:'ok'}", "a{background:url( 'a.png' )}", "a{background:url( a.png )}", 'a{content:"it\'s"}']) assert.equal(sanitizeCss(css).blocked, 0, css);
+  });
+  it("an attribute bomb or a tag bomb fails closed fast, before parse5 sees it", () => {
+    const bombs: [string, string][] = [
+      ["180 KB tag with 36,000 attributes", `<a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`],
+      ["svg with 38,000 attributes", `<svg ${Array.from({ length: 38_000 }, (_, i) => `d${i}="1"`).join(" ")}></svg>`],
+      ["attributes behind quoted > characters", `<a ${Array.from({ length: 20_000 }, (_, i) => `a${i}=">"`).join(" ")}>x</a>`],
+      ["an end tag with many attributes", `</a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>`],
+      ["300,000 tags", "<b>".repeat(300_000)],
+    ];
+    for (const [what, html] of bombs) {
+      const t = performance.now();
+      assert.throws(() => sanitizeHtml(html), what);
+      assert.equal(servedDocument(html), BLOCKED_DOCUMENT, what);
+      assert.ok(performance.now() - t < 100, `${what} took ${(performance.now() - t).toFixed(0)} ms`);
+    }
+    assert.doesNotThrow(() => precheck(`<a ${Array.from({ length: SANITIZE_MAX_ATTRS }, (_, i) => `a${i}`).join(" ")}>x</a>`), "the limit itself is fine");
+    // a script that compares things is not a tag bomb
+    assert.doesNotThrow(() => precheck(`<script>for(i=0;i<n;i++){${"x ".repeat(5000)}}</script>`));
+  });
+  it("<template> nesting counts: template content is one level deeper than the template", () => {
+    const deep = "<template>".repeat(300);
+    assert.throws(() => sanitizeHtml(deep), /deeply/);
+  });
+  it("<fencedframe> is removed; -moz-image-set and archive, cite, usemap, classid and srcdoc are URL checked", () => {
+    assert.ok(!has('<p>a</p><fencedframe src="https://x.test/"></fencedframe>', /fencedframe|x\.test/));
+    assert.ok(!clean('<div style="background:-moz-image-set(\'http://x.test/a.png\' 1x)">t</div>').includes("x.test"));
+    for (const attr of ["archive", "cite", "usemap", "classid", "srcdoc"]) {
+      const out = clean(`<div ${attr}="http://x.test/a">t</div><blockquote ${attr}="//x.test/b">q</blockquote>`);
+      assert.ok(!out.includes("x.test"), `${attr}: ${out}`);
+      assert.ok(out.includes(">t<") && out.includes(">q<"), "the content stays");
+    }
+    assert.ok(has('<blockquote cite="#note">q</blockquote>', /cite="#note"/), "a relative value stays");
+  });
+  it("every attribute of an svg element is read as CSS (shape-inside, an unknown one)", () => {
+    for (const attr of ["shape-inside", "mask-border-source", "x-new-property"]) {
+      const out = clean(`<svg><text ${attr}="url(//x.test/a)">t</text></svg>`);
+      assert.ok(!out.includes("x.test"), `${attr}: ${out}`);
+    }
+    assert.ok(has('<svg><text aria-label="Bob\'s chart" font-family="Nunito">t</text></svg>', /aria-label="Bob's chart"/), "a plain text attribute is untouched");
+    assert.ok(has('<svg><path d="M0 0L1 1" transform="translate(1 2)"/></svg>', /translate\(1 2\)/));
+  });
+  it("verification demands a fixed point: parse then serialize of the output is the output", () => {
+    const out = clean('<p>a<table><tr><td>x</td></tr></table><b>b</p>');
+    assert.equal(out, clean(out), "an ordinary page is a fixed point");
   });
 });
 
