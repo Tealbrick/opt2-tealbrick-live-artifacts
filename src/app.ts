@@ -23,6 +23,7 @@ import {
   type ArtifactGetInput,
   type ArtifactListInput,
   type ArtifactNewInput,
+  type ArtifactPreviewTicketInput,
   type ArtifactRemoveInput,
   type ArtifactUpdateInput,
   type AutopublishSetInput,
@@ -63,6 +64,14 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
+import { createPreview, VIEW_PREFIX } from "./viewer.ts";
+
+/** The bridge's viewer address (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). Read tolerantly: an SDK without the
+ *  field gives undefined → null → view_origin_missing. */
+export function viewUrlOf(ctx: object): string | null {
+  const v = (ctx as { viewUrl?: unknown }).viewUrl;
+  return typeof v === "string" && /^https:\/\/[^/]+$/.test(v) ? v : null;
+}
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];
 export const migrationsDir = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -340,6 +349,16 @@ export const handlers = {
         links: linksOf(ctx.db, i.id, now),
         activity: activityOf(ctx.db, i.id),
       };
+    },
+  }),
+  [OP.artifactPreviewTicket]: op<ArtifactPreviewTicketInput, unknown>({
+    async run(i, ctx) {
+      const view = viewUrlOf(ctx);
+      if (!view) throw new TbError("view_origin_missing", "The bridge has no viewer address yet. Ask Portal to redeploy the bridge.", 409);
+      if (!artifactRow(ctx.db, i.id)) throw notFound();
+      if (i.version !== undefined && !versionRow(ctx.db, i.id, i.version)) throw new TbError("version_unknown", `version ${i.version} does not exist`, 404);
+      const p = createPreview(ctx.db, i.id, i.version ?? null, actorOf(ctx), clock());
+      return { url: `${view}${VIEW_PREFIX}/${p.token}`, version: p.version, expiresAt: new Date(p.expiresAt).toISOString() };
     },
   }),
   [OP.publishVersion]: op<PublishVersionInput, unknown>({

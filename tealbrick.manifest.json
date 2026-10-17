@@ -2660,6 +2660,64 @@
     },
     {
       "audience": "person",
+      "id": "artifact_preview_ticket",
+      "title": "Preview a page",
+      "description": "Mint a 10-minute preview link for one version (default: the staged version, else the live one) on the viewer address. Answers view_origin_missing (409) while the bridge has no viewer address.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "version",
+          "expiresAt"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "expiresAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": false
+    },
+    {
+      "audience": "person",
       "id": "publish_version",
       "title": "Make a version live",
       "description": "Make a version live: promote the staged version and staged data, or roll back to an older version.",
