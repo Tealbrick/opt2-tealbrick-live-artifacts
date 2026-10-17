@@ -162,6 +162,7 @@ export function linksOf(db: Db, id: string, now: number) {
       pinVersion: r.pin_version === null ? null : Number(r.pin_version),
       views: Number(r.views),
       lastSeenDay: r.last_seen_day === null ? null : String(r.last_seen_day),
+      runsScripts: Number(r.scripts_ok) === 1,
       status: (r.revoked_at !== null ? "revoked" : Number(r.expires_at) <= now ? "expired" : "active") as "active" | "expired" | "revoked",
     }));
 }

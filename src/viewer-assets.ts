@@ -37,7 +37,7 @@ export const SHELL_JS = `(() => {
   document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   const base = location.pathname.replace(/\\/+$/, "");
   const $ = (id) => document.getElementById(id);
-  let frame = null, live = 0, etag = null, state = null, ready = false;
+  let frame = null, live = 0, docRev = null, etag = null, state = null, ready = false;
   const ago = (iso) => {
     if (!iso) return "never";
     const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -55,10 +55,12 @@ export const SHELL_JS = `(() => {
     $("fresh").textContent = "Updated " + ago(state.fetchedAt) + every(state.refresh.everySeconds);
     const note = state.stale ? "This page could not refresh. It shows the last data it got." : state.refresh.state === "paused" ? "Refresh is paused." : "";
     $("note").textContent = note; $("note").hidden = note === "";
-    if (!frame || state.live !== live) {
-      live = state.live; ready = false;
+    if (!frame || state.live !== live || state.docRev !== docRev) {
+      live = state.live; docRev = state.docRev; ready = false;
       const f = document.createElement("iframe");
-      f.setAttribute("sandbox", "allow-scripts");
+      // a page without script (or a link not approved for scripts) is framed without allow-scripts and cannot report its height
+      f.setAttribute("sandbox", state.scriptless ? "" : "allow-scripts");
+      if (state.scriptless) f.style.height = "max(480px, calc(100vh - 220px))";
       f.setAttribute("referrerpolicy", "no-referrer");
       f.setAttribute("title", state.title);
       f.src = "/v/live-artifacts/" + state.doc;

@@ -144,8 +144,18 @@ describe("links on the real SDK (viewer address present)", () => {
     assert.equal(data.title, "Weekly operations");
     const doc = await b.viewer(`/v/live-artifacts/${data.doc}`, { "sec-fetch-dest": "iframe" });
     assert.equal(doc.status, 200, "the SDK's _d gate accepts our sandbox CSP (an unsafe one would be 502)");
-    assert.match(doc.headers.get("content-security-policy") ?? "", /^sandbox allow-scripts;/);
+    assert.match(doc.headers.get("content-security-policy") ?? "", /^sandbox; .*script-src 'none'/, "a page without script gets the scriptless CSP, and the SDK gate accepts it");
     assert.match(await doc.text(), /<h1>v1<\/h1>/);
+    // a page that runs scripts: the SDK gate accepts the allow-scripts sandbox too
+    const sid = String((await b.call("artifact_create", { title: "Scripted", view: { html: "<!doctype html><html><body><h1>s</h1><script>tb.ready()</script></body></html>" } }, { held: [], key: "idem-key-scripted-1" })).body.output.id);
+    const owner = await b.person();
+    const scripted = String(((await owner.op("link_create", { id: sid }, { key: "own-link-scripted" })).body.output as { url: string }).url.split("/").pop());
+    const sdata = (await (await b.viewer(`/v/live-artifacts/${scripted}/data`)).json()) as Record<string, any>;
+    const sdoc = await b.viewer(`/v/live-artifacts/${sdata.doc}`, { "sec-fetch-dest": "iframe" });
+    assert.equal(sdoc.status, 200);
+    assert.match(sdoc.headers.get("content-security-policy") ?? "", /^sandbox allow-scripts;/);
+    assert.equal(sdata.runsScripts, true);
+    assert.equal(sdata.scriptless, false);
     const direct = await b.viewer(`/v/live-artifacts/${data.doc}`, { "sec-fetch-dest": "document" });
     assert.equal(direct.status, 404, "a document opened on its own is refused");
     assert.equal(Number(b.links()[0]?.views), 1, "the shell load was counted once");
@@ -276,6 +286,40 @@ describe("what the approval is bound to, on the real SDK", () => {
     await b.approve(String(h2.body.holdId));
     assert.equal((await b.call("artifact_share", ok, { held: ["public_link"], key: "idem-key-stranger-2", agent: b.w.agent2 })).status, 200);
   });
+
+  it("scripts (C239): the hold says the page runs none; after the approval the page gains scripts → the approved retry is 409 page_changed and no link; the scripted page's hold carries the exact sentence", async () => {
+    const linksBefore = b.links().length;
+    const id = await create("Swap page", "idem-key-scripts-1");
+    const e = await looked(b, id);
+    assert.equal(e.runsScripts, false);
+    const input = { id, expect: e };
+    const held = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-scripts-share" });
+    assert.equal(held.status, 202, JSON.stringify(held.body));
+    const view = b.hold(String(held.body.holdId)).view ?? "";
+    assert.match(view, /This page runs no scripts\./);
+    assert.ok(!view.includes("This page runs scripts."));
+    await b.approve(String(held.body.holdId));
+    // the swap after the approval (no link exists yet, so the new version goes live at once)
+    const swapped = await b.call("artifact_update", { id, view: { html: "<!doctype html><html><body><h1>x</h1><script>fetch('https://x.test')</script></body></html>" }, expectedVersion: 1 }, { held: [], key: "idem-key-scripts-swap" });
+    assert.equal(swapped.status, 200, JSON.stringify(swapped.body));
+    const r = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-scripts-share" });
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.error.code, "page_changed");
+    assert.equal(b.links().length, linksBefore, "no link was made");
+    // asking again for the page as it is: the hold carries the exact sentence, the owner approves it, the link is made for scripts
+    const e2 = await looked(b, id);
+    assert.equal(e2.runsScripts, true);
+    const held2 = await b.call("artifact_share", { id, expect: e2 }, { held: ["public_link"], key: "idem-key-scripts-share-2" });
+    assert.equal(held2.status, 202, JSON.stringify(held2.body));
+    const view2 = b.hold(String(held2.body.holdId)).view ?? "";
+    assert.ok(view2.split("\n").includes("This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites."), view2);
+    assert.ok(!view2.startsWith("Do not approve"));
+    await b.approve(String(held2.body.holdId));
+    const ok = await b.call("artifact_share", { id, expect: e2 }, { held: ["public_link"], key: "idem-key-scripts-share-2" });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(b.links().length, linksBefore + 1);
+    assert.equal(Number(b.links().at(-1)?.scripts_ok), 1);
+  });
 });
 
 describe("review blockers: a hold that cannot be flagged, and a creator that lost its scope (real SDK)", () => {
@@ -324,7 +368,7 @@ describe("review blockers: a hold that cannot be flagged, and a creator that los
 
   it("the owner removed the agent's access to its OWN gallery: scope_denied, identical to an unknown page, for artifact_share and artifact_publish", async () => {
     const id = String((await b.call("artifact_create", { ...PAGE, title: "Own gallery page" }, { held: [], key: "idem-key-own-1" })).body.output.id);
-    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess", runsScripts: false };
     const owner = await b.person();
     const set = (access: string | null) => owner.op("tb.scopes_set", { agent: b.w.agent, type: "gallery", id: b.w.agent, access });
     assert.equal((await set(null)).status, 200);
@@ -351,7 +395,7 @@ describe("review blockers: a hold that cannot be flagged, and a creator that los
     const owner = await b.person();
     const revoke = await owner.op("tb.scopes_set", { agent: b.w.agent2, type: "gallery", id: "shared", access: null });
     assert.equal(revoke.status, 200, JSON.stringify(revoke.body));
-    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess", runsScripts: false };
     const real = await b.call("artifact_share", { id, expect: guess }, { held: ["public_link"], key: "idem-key-scope-2", agent: b.w.agent2 });
     const unknown = await b.call("artifact_share", { id: "art_01J0000000000000000000ZZZZ", expect: guess }, { held: ["public_link"], key: "idem-key-scope-3", agent: b.w.agent2 });
     assert.equal(real.status, 403, JSON.stringify(real.body));
@@ -379,7 +423,7 @@ describe("a paused agent (real SDK)", () => {
     assert.equal(made.status, 200, JSON.stringify(made.body));
     const realId = String(made.body.output.id);
     const unknownId = "art_01J0000000000000000000ZZZZ";
-    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess", runsScripts: false };
     const answers: [number, string, string][] = [];
     for (const [op, mk] of [
       ["artifact_share", (id: string) => ({ id, expect: guess })],

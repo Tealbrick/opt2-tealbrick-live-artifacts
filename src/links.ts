@@ -4,7 +4,7 @@
 import { digest, opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { parseStoredContract, sourceDigest } from "./contract.ts";
-import { type ShareExpect, shareMismatch, visiblePushData } from "./expect.ts";
+import { type ShareExpect, shareMismatch, versionRunsScripts, visiblePushData } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
 import { type Actor, activeLinkCount, artifactRow, getSettings, logActivity, notFound, type PublishExpect, pageChanged, versionRow } from "./store.ts";
 import { newToken } from "./viewer.ts";
@@ -62,13 +62,16 @@ export function createLink(db: Db, a: CreateLinkArgs, now: number): CreatedLink 
     const old = "SELECT id FROM la_link WHERE kind = 'viewer' AND ((revoked_at IS NOT NULL AND revoked_at < ?1) OR (revoked_at IS NULL AND expires_at < ?1))";
     db.prepare(`DELETE FROM la_view_day WHERE link_id IN (${old})`).run(cutoff);
     db.prepare(`DELETE FROM la_link WHERE id IN (${old})`).run(cutoff);
+    // approved for scripts only if the page it shows runs scripts now (an agent link: bound by expect.runsScripts above)
+    const shownV = versionRow(db, a.artifactId, pin ?? Number(art.live_version));
+    const scriptsOk = shownV !== undefined && versionRunsScripts(shownV) ? 1 : 0;
     const token = newToken();
     const id = `lnk_${ulid(now)}`;
     const expiresAt = now + days * DAY_MS;
     db.prepare(
-      `INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version)
-       VALUES (?, ?, 'viewer', ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, a.artifactId, opaqueDigest(token), a.label, a.by.type, a.by.id, a.by.name, now, expiresAt, pin);
+      `INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version, scripts_ok)
+       VALUES (?, ?, 'viewer', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, a.artifactId, opaqueDigest(token), a.label, a.by.type, a.by.id, a.by.name, now, expiresAt, pin, scriptsOk);
     logActivity(db, a.artifactId, "link.create", a.by, `${a.label ? `"${a.label}"` : "link"} for ${days} day${days === 1 ? "" : "s"}${pin === null ? "" : `, version ${pin}`}`, now);
     return { id, token, expiresAt, pin };
   });
@@ -116,6 +119,8 @@ export function listLinks(db: Db, now: number) {
       pinVersion: r.pin_version === null ? null : Number(r.pin_version),
       views: Number(r.views),
       lastSeenDay: r.last_seen_day === null ? null : String(r.last_seen_day),
+      /** the link may run the page's scripts (the owner approved it for a page that runs scripts) */
+      runsScripts: Number(r.scripts_ok) === 1,
       status: statusOf(r, now),
     }));
   return { items, active: activeWorkspaceLinks(db, now) };
@@ -137,6 +142,8 @@ const kib = (bytes: number): string => `${Math.max(1, Math.round(bytes / KIB))} 
 /** "sha256:<hex>" → its first 16 hex digits, enough for the owner to compare with what the agent reports. */
 const shortDigest = (d: string): string => `${d.replace(/^sha256:/, "").slice(0, 16)}…`;
 const NAME_MAX = 60;
+/** The sentence the owner approves when a page runs scripts (C239). Exactly this text. */
+export const RUNS_SCRIPTS_SENTENCE = "This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites.";
 
 /** One source in the words the owner reads: its quoted label and what it is (all agent-written text is quoted). */
 function sourceLine(s: Row): string {
@@ -212,8 +219,17 @@ export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { vi
   for (const d of visiblePushData(db, i.id)) {
     lines.push(`Pushed data ${quote(d.label, 60)} (key ${d.key}) is shown as it is now: ${d.sha256 === "none" ? "no data yet" : `${kib(d.bytes)}, sha256 ${shortDigest(d.sha256)}`}.`);
   }
+  if (v && versionRunsScripts(v)) {
+    lines.push(
+      RUNS_SCRIPTS_SENTENCE,
+      "The page cannot read your Tealbrick data or session. A viewer can still copy what is on screen.",
+    );
+  } else if (v) {
+    lines.push(
+      "This page runs no scripts. The link shows it without scripts, also if a later version of the page gains scripts. The page cannot read your Tealbrick data or session. A viewer can still copy what is on screen.",
+    );
+  }
   lines.push(
-    "Page code written by an AI agent runs in the viewer's browser. The page cannot read your Tealbrick data or session. In some browsers it can contact outside sites. Do not type private information into it. A viewer can still copy what is on screen.",
     `At the time of this request ${plural(have, "link")} of this page ${have === 1 ? "is" : "are"} active (at most ${LIMITS.linksPerArtifact}).`,
   );
   return lines.join("\n");
@@ -272,6 +288,7 @@ export function publishHoldText(db: Db, i: PublishHoldInput, now: number): strin
       lines.push("Links that follow the live version show it at once; pinned links keep their version.");
       if (staged !== null && staged !== i.version) lines.push(`The staged version ${staged} stays staged and waits for you.`);
     }
+    if (versionRunsScripts(v)) lines.push(RUNS_SCRIPTS_SENTENCE, "Links approved without scripts keep showing the page without scripts.");
     if (e && e.htmlSha256 !== String(v.html_sha256)) lines.push(`The agent saw sha256 ${shortDigest(e.htmlSha256)}. That is not version ${i.version} as it is now; the call will be refused (page_changed).`);
     // title and description: an agent's call moves only what it lists and what is shown here
     const goesWith = staged === null || staged === i.version;

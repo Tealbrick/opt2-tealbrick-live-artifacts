@@ -8,7 +8,7 @@ import { type Db, type OpContext, VIEW_ORIGIN_MISSING } from "@opt2-tealbrick/mi
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
 import { type ShareExpect, shareExpectOf, shareMismatch } from "../src/expect.ts";
 import { LIMITS } from "../src/limits.ts";
-import { publishHoldText, shareHoldText } from "../src/links.ts";
+import { publishHoldText, RUNS_SCRIPTS_SENTENCE, shareHoldText } from "../src/links.ts";
 import { handleViewer, type ViewerConfig } from "../src/viewer.ts";
 import { AGENT_A, AGENT_B, CRUD, ctxFor, grantHolding, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -38,7 +38,7 @@ async function page(title = "Weekly operations"): Promise<string> {
  *  the title, the pushed data link viewers see and the fingerprint of the data sources. */
 function seen(id: string, pin?: number | null): ShareExpect {
   const live = Number(db.prepare("SELECT live_version FROM la_artifact WHERE id = ?").get(id)?.live_version);
-  return shareExpectOf(db, id, pin ?? live) ?? ({ version: 0, htmlSha256: "", title: "", data: [], sourcesSha256: "" } satisfies ShareExpect);
+  return shareExpectOf(db, id, pin ?? live) ?? ({ version: 0, htmlSha256: "", title: "", data: [], sourcesSha256: "", runsScripts: false } satisfies ShareExpect);
 }
 const sha = (id: string, n: number): string => String(db.prepare("SELECT html_sha256 FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n)?.html_sha256);
 const share = (id: string, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) => run("artifact_share", { id, expect: seen(id, extra.pin as number | null | undefined), ...extra }, ctx);
@@ -542,6 +542,100 @@ describe("staging and artifact_publish (DESIGN §4.7)", () => {
   });
 });
 
+describe("pages that run scripts (C239)", () => {
+  const FREE = "<!doctype html><html><body><h1>free</h1></body></html>";
+  const SCRIPTS: [string, string][] = [
+    ["a script element", "<!doctype html><html><body><h1>s</h1><script>tb.ready()</script></body></html>"],
+    ["a JSON script element", '<!doctype html><html><body><script type="application/json">{}</script></body></html>'],
+    ["an inline event handler", '<!doctype html><html><body><button onclick="go()">go</button></body></html>'],
+    ["an svg handler", '<!doctype html><html><body><svg onload="x()"></svg></body></html>'],
+    ["a script in a template", "<!doctype html><html><body><template><script>1</script></template></body></html>"],
+  ];
+  const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+  it("the server decides from the sanitized page: scripts, handlers, javascript: URLs; an agent flag changes nothing", async () => {
+    for (const [what, html] of SCRIPTS) {
+      const id = await page(`P ${what}`);
+      setHtml(id, html);
+      assert.equal(seen(id).runsScripts, true, what);
+    }
+    const id = await page("free");
+    setHtml(id, FREE);
+    assert.equal(seen(id).runsScripts, false);
+    // a javascript: URL is removed by the sanitizer, so it leaves a page without scripts
+    setHtml(id, '<!doctype html><html><body><a href="javascript:alert(1)">x</a><img src="x" alt="">&lt;script&gt;</body></html>');
+    assert.equal(seen(id).runsScripts, false);
+    // a script the sanitizer removes anyway does not count
+    setHtml(id, '<!doctype html><html><body><script type="speculationrules">{}</script><script src="https://x.test/a.js"></script></body></html>');
+    assert.equal(seen(id).runsScripts, false);
+    // a text that only SAYS script is not one
+    setHtml(id, "<!doctype html><html><body><p>&lt;script&gt;alert(1)&lt;/script&gt; onclick=x</p></body></html>");
+    assert.equal(seen(id).runsScripts, false);
+  });
+  it("the hold of a page that runs scripts carries the exact sentence; a page without scripts says it runs none", async () => {
+    const id = await page("Scripted");
+    setHtml(id, SCRIPTS[0]?.[1] ?? "");
+    const text = shareHoldText(db, { id, expect: seen(id) }, now);
+    assert.ok(text.split("\n").includes("This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites."), text);
+    assert.equal(RUNS_SCRIPTS_SENTENCE, "This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites.");
+    assert.doesNotMatch(text, /This page runs no scripts/);
+    const free = await page("Free");
+    setHtml(free, FREE);
+    const t2 = shareHoldText(db, { id: free, expect: seen(free) }, now);
+    assert.match(t2, /This page runs no scripts\./);
+    assert.ok(!t2.includes("This page runs scripts."));
+  });
+  it("the link remembers what the owner approved: scripts_ok, and the lists show the 'runs scripts' fact", async () => {
+    const a = await page("A");
+    setHtml(a, SCRIPTS[0]?.[1] ?? "");
+    const b = await page("B");
+    setHtml(b, FREE);
+    const la = await share(a);
+    const lb = await share(b);
+    assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE id = ?").get(la.linkId)?.scripts_ok), 1);
+    assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE id = ?").get(lb.linkId)?.scripts_ok), 0);
+    const list = await run("links_list", {}, owner());
+    assert.deepEqual(
+      list.items.map((i: Out) => [i.id, i.runsScripts]).sort(),
+      [[la.linkId, true], [lb.linkId, false]].sort(),
+    );
+    const detail = await run("artifact_detail", { id: a }, owner());
+    assert.equal(detail.runsScripts, true);
+    assert.equal(detail.links[0].runsScripts, true);
+    assert.equal((await run("artifact_detail", { id: b }, owner())).runsScripts, false);
+    // the owner's own link_create follows the same rule
+    const c = await page("C");
+    setHtml(c, FREE);
+    const lc = await run("link_create", { id: c }, owner());
+    assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE id = ?").get(lc.linkId)?.scripts_ok), 0);
+  });
+  it("approve-then-swap: a page that gains scripts after the approval is refused with page_changed, even when only the scripts fact is stale", async () => {
+    const id = await page("Swap");
+    setHtml(id, FREE);
+    const approved = seen(id);
+    assert.equal(approved.runsScripts, false);
+    // the swap: same expect except the scripts fact, as if the agent copied an old shareExpect (the code hash would differ too)
+    setHtml(id, SCRIPTS[0]?.[1] ?? "");
+    await assert.rejects(run("artifact_share", { id, expect: approved }, agent()), PAGE_CHANGED);
+    const onlyFlag = { ...seen(id), runsScripts: false };
+    assert.deepEqual(shareMismatch(db, id, null, onlyFlag), ["scripts"]);
+    await assert.rejects(run("artifact_share", { id, expect: onlyFlag }, agent()), PAGE_CHANGED);
+    // the hold for such a request says Do not approve and names the scripts
+    const text = shareHoldText(db, { id, expect: onlyFlag }, now);
+    assert.equal(text.split("\n")[0], "Do not approve: this is not the page as it is now.");
+    assert.match(text, /differs in: scripts/);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE artifact_id = ?").get(id))?.c, 0);
+    // and the other way: an expect that says scripts for a page without is refused too
+    setHtml(id, FREE);
+    await assert.rejects(run("artifact_share", { id, expect: { ...seen(id), runsScripts: true } }, agent()), PAGE_CHANGED);
+  });
+  it("artifact_publish of a version that runs scripts shows the sentence", async () => {
+    const id = await page("Pub");
+    setHtml(id, SCRIPTS[0]?.[1] ?? "");
+    const text = publishHoldText(db, { id, version: 1 }, now);
+    assert.ok(text.includes(RUNS_SCRIPTS_SENTENCE));
+  });
+});
+
 describe("hold texts (DESIGN T4)", () => {
   async function richPage(title = "Weekly operations"): Promise<string> {
     const id = await run(
@@ -576,7 +670,8 @@ describe("hold texts (DESIGN T4)", () => {
     assert.match(text, /does not show: "Client notes" \("knowledge" "recall"\)\./);
     assert.match(text, /Pushed data "Numbers" \(key n\) is shown as it is now: no data yet\./);
     assert.match(text, /At the time of this request 0 links of this page are active \(at most 5\)\./);
-    assert.match(text, /In some browsers it can contact outside sites/);
+    assert.match(text, /This page runs no scripts\. The link shows it without scripts, also if a later version of the page gains scripts\./);
+    assert.doesNotMatch(text, /This page runs scripts\./);
     assert.ok(text.length < 16_000);
     const follow = shareHoldText(db, { id }, now);
     assert.match(follow, /7 days after you approve/);

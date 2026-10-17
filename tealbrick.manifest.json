@@ -957,7 +957,8 @@
                 "pinVersion",
                 "views",
                 "lastSeenDay",
-                "status"
+                "status",
+                "runsScripts"
               ],
               "properties": {
                 "id": {
@@ -1057,6 +1058,10 @@
                     "expired",
                     "revoked"
                   ]
+                },
+                "runsScripts": {
+                  "type": "boolean",
+                  "description": "The link may run the page's scripts: the owner approved it for a page that runs scripts. A link approved without scripts always shows the page without scripts."
                 }
               }
             }
@@ -1075,7 +1080,8 @@
               "htmlSha256",
               "title",
               "data",
-              "sourcesSha256"
+              "sourcesSha256",
+              "runsScripts"
             ],
             "description": "What artifact_share needs as expect for the version returned here (a link would show this version): copy it as it is.",
             "properties": {
@@ -1124,6 +1130,10 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 80
+              },
+              "runsScripts": {
+                "type": "boolean",
+                "description": "Whether the page code of this version runs scripts (a script element or an inline event handler, decided by the app from the sanitized page). Copy it as artifact_get gave it; the owner approves the matching sentence, and a page that gains scripts after that is refused with page_changed."
               }
             }
           }
@@ -2009,7 +2019,8 @@
               "htmlSha256",
               "title",
               "data",
-              "sourcesSha256"
+              "sourcesSha256",
+              "runsScripts"
             ],
             "description": "The page as artifact_get shows it in shareExpect: the version the link will show (the pinned one, else the live one), that version's sha256, the title, the pushed data link viewers would see, and the fingerprint of the data sources. Pass shareExpect as it is. The owner approves exactly this page; if any of it changed before the call runs (even after the owner approved), the call is refused with page_changed.",
             "properties": {
@@ -2059,6 +2070,10 @@
                 "minLength": 1,
                 "maxLength": 80,
                 "description": "The fingerprint of the page's list of data sources (labels, kinds, which ones link viewers see)."
+              },
+              "runsScripts": {
+                "type": "boolean",
+                "description": "Whether the page code of this version runs scripts (a script element or an inline event handler, decided by the app from the sanitized page). Copy it as artifact_get gave it; the owner approves the matching sentence, and a page that gains scripts after that is refused with page_changed."
               }
             }
           }
@@ -2640,7 +2655,8 @@
           "sources",
           "links",
           "activity",
-          "lint"
+          "lint",
+          "runsScripts"
         ],
         "properties": {
           "artifact": {
@@ -2952,7 +2968,8 @@
                 "pinVersion",
                 "views",
                 "lastSeenDay",
-                "status"
+                "status",
+                "runsScripts"
               ],
               "properties": {
                 "id": {
@@ -3052,6 +3069,10 @@
                     "expired",
                     "revoked"
                   ]
+                },
+                "runsScripts": {
+                  "type": "boolean",
+                  "description": "The link may run the page's scripts: the owner approved it for a page that runs scripts. A link approved without scripts always shows the page without scripts."
                 }
               }
             }
@@ -3145,6 +3166,10 @@
                 }
               }
             }
+          },
+          "runsScripts": {
+            "type": "boolean",
+            "description": "The version returned here runs scripts (decided from the sanitized page)."
           }
         }
       },
@@ -3822,7 +3847,8 @@
                 "pinVersion",
                 "views",
                 "lastSeenDay",
-                "status"
+                "status",
+                "runsScripts"
               ],
               "properties": {
                 "id": {
@@ -3933,6 +3959,10 @@
                     "expired",
                     "revoked"
                   ]
+                },
+                "runsScripts": {
+                  "type": "boolean",
+                  "description": "The link may run the page's scripts: the owner approved it for a page that runs scripts. A link approved without scripts always shows the page without scripts."
                 }
               }
             }

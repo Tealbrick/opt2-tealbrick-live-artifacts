@@ -371,7 +371,8 @@ const textOf = (el: El): string | null => {
 };
 
 /** Decide about one element and (when `mutate`) rewrite its attributes. Returns true to remove it with its subtree. */
-function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
+function inspectElement(el: El, c: Ctx): boolean {
+  const { mutate, f } = c;
   const tag = el.tagName.toLowerCase();
   if (REMOVE_ELEMENTS.has(tag)) {
     note(f, tag === "link" || tag === "base" || tag === "portal" ? tag : "embedded-content");
@@ -381,8 +382,18 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
   const keep: typeof attrs = [];
   let remove = false;
   let rewritten = false;
+  let handler = false;
   for (const a of attrs) {
     const key = attrKey(a);
+    if (key.length > 2 && key.startsWith("on")) {
+      // an inline event handler is script
+      if (c.allowScripts) handler = true;
+      else {
+        note(f, "event-handler");
+        rewritten = true;
+        continue;
+      }
+    }
     if (key === "http-equiv" && tag === "meta") {
       note(f, "meta-http-equiv");
       return true;
@@ -427,6 +438,11 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
       note(f, "speculation-rules");
       return true;
     }
+    if (!c.allowScripts) {
+      note(f, "script");
+      return true;
+    }
+    c.scripts = true;
   }
   if (SMIL.has(tag)) {
     const target = (el.attrs.find((a) => attrKey(a) === "attributename")?.value ?? "").trim().toLowerCase();
@@ -449,6 +465,7 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
       if (mutate && el.childNodes[0]) (el.childNodes[0] as Txt).value = r.text;
     }
   }
+  if (handler) c.scripts = true;
   if (rewritten && mutate) el.attrs = keep;
   return false;
 }
@@ -460,7 +477,17 @@ const ROUND_TRIP_RISK = new Set(["template", "select", "form", "plaintext", "xmp
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolean }): void {
+/** State of one walk. `scripts`: a script element or an inline event handler is left in the document. */
+interface Ctx {
+  mutate: boolean;
+  f: Findings;
+  allowScripts: boolean;
+  scripts: boolean;
+  risky: boolean;
+  trackRisk: boolean;
+}
+
+function walk(root: Parent, c: Ctx): void {
   const stack: Parent[] = [root];
   while (stack.length > 0) {
     const parent = stack.pop() as Parent;
@@ -470,10 +497,10 @@ function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolea
       let drop = false;
       if (child.nodeName === "#comment") drop = true; // inert, but conditional comments and bogus comments are noise
       else if (child.nodeName !== "#text" && child.nodeName !== "#documentType") {
-        drop = inspectElement(child as El, mutate, f);
-        if (risk && !risk.risky && !drop) {
+        drop = inspectElement(child as El, c);
+        if (c.trackRisk && !c.risky && !drop) {
           const el = child as El;
-          if (el.namespaceURI !== HTML_NS || ROUND_TRIP_RISK.has(el.tagName.toLowerCase())) risk.risky = true;
+          if (el.namespaceURI !== HTML_NS || ROUND_TRIP_RISK.has(el.tagName.toLowerCase())) c.risky = true;
         }
       }
       if (drop) {
@@ -487,7 +514,7 @@ function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolea
         if (content) stack.push(content); // <template> keeps its tree in .content
       }
     }
-    if (removed && mutate) (parent as { childNodes: Node[] }).childNodes = kids.filter((k) => !removed?.has(k));
+    if (removed && c.mutate) (parent as { childNodes: Node[] }).childNodes = kids.filter((k) => !removed?.has(k));
   }
 }
 /** Comments are removed silently; they are not security findings. */
@@ -601,35 +628,50 @@ export interface Sanitized {
   html: string;
   /** what was removed or rewritten, by rule */
   findings: Record<string, number>;
+  /** the SANITIZED document still has a script element or an inline event handler (decided here, from the tree, never from
+   *  anything the agent says). With `allowScripts: false` the scripts are removed and this still says what the page had. */
+  runsScripts: boolean;
+}
+export interface SanitizeOptions {
+  /** false: remove every script element and inline event handler (the scriptless render of a public link) */
+  allowScripts?: boolean;
 }
 
 /** Sanitize one agent document. Throws on any failure; use `servedDocument` to fail closed. */
-export function sanitizeHtml(input: string): Sanitized {
+export function sanitizeHtml(input: string, opts: SanitizeOptions = {}): Sanitized {
   if (input.length > SANITIZE_MAX_BYTES) throw new Error("document too large to sanitize");
   precheck(input);
+  const allowScripts = opts.allowScripts !== false;
   const f: Findings = new Map();
   const doc = parseBounded(input);
-  const risk = { risky: false };
-  walk(doc, true, f, risk);
+  const c: Ctx = { mutate: true, f, allowScripts: true, scripts: false, risky: false, trackRisk: true };
+  // what the page HAS is judged on the sanitized tree with scripts allowed; stripping happens in a second walk when asked
+  walk(doc, c);
+  const runsScripts = c.scripts;
+  if (!allowScripts) walk(doc, { mutate: true, f, allowScripts: false, scripts: false, risky: false, trackRisk: false });
   const html = serialize(doc);
   // Verification: the browser parses OUR output. It must contain nothing the sanitizer would still change. Every page
   // within the version size cap is verified (about 17 ms at the cap); a larger input (not writable through the app) only
   // when its tree has a shape known to change on a round trip. The check costs one more parse.
-  if (input.length <= LIMITS.htmlBytes || risk.risky) {
+  if (input.length <= LIMITS.htmlBytes || c.risky) {
     const again: Findings = new Map();
     const reparsed = parseBounded(html);
-    walk(reparsed, false, again);
+    walk(reparsed, { mutate: false, f: again, allowScripts, scripts: false, risky: false, trackRisk: false });
     if (securityCount(again) > 0) throw new Error(`sanitized output is not stable: ${[...again.keys()].join(",")}`);
     // a fixed point: parse and serialize of the output give the same text, so the browser builds the tree we checked
     if (serialize(reparsed) !== html) throw new Error("sanitized output changes when it is parsed again");
   }
-  return { html, findings: Object.fromEntries(f) };
+  return { html, findings: Object.fromEntries(f), runsScripts };
 }
 
-// Sanitizing is deterministic, so the result is cached by the digest of the input (a viewer polls and reloads).
+// Sanitizing is deterministic, so the result is cached by the digest of the input and the mode (a viewer polls and reloads).
 const CACHE_MAX_ENTRIES = 16;
 const CACHE_MAX_BYTES = 8 * 1024 * 1024;
-const cache = new Map<string, string>();
+interface Served {
+  html: string;
+  runsScripts: boolean;
+}
+const cache = new Map<string, Served>();
 let cacheBytes = 0;
 export function clearSanitizeCache(): void {
   cache.clear();
@@ -643,28 +685,90 @@ export function servedDocumentOf(row: Record<string, unknown>): string {
   return servedDocument(Buffer.from(row.html as Uint8Array).toString("utf8"));
 }
 
-/** THE call site for a served document: sanitized HTML, or the fixed "cannot show this page" document when anything fails. */
-export function servedDocument(html: string): string {
+/** THE call site for a served document: sanitized HTML and whether it runs scripts, or the fixed "cannot show this page"
+ *  document (no scripts) when anything fails. `allowScripts: false` is the scriptless render. */
+export function servedDocumentInfo(html: string, opts: SanitizeOptions = {}): Served {
   try {
-    const key = createHash("sha256").update(html, "utf8").digest("hex");
+    const mode = opts.allowScripts === false ? "n" : "s";
+    const key = `${mode}:${createHash("sha256").update(html, "utf8").digest("hex")}`;
     const hit = cache.get(key);
     if (hit !== undefined) {
       cache.delete(key);
       cache.set(key, hit);
       return hit;
     }
-    const out = sanitizeHtml(html).html;
-    if (out.length * 2 <= CACHE_MAX_BYTES) {
+    const r = sanitizeHtml(html, opts);
+    const out: Served = { html: r.html, runsScripts: r.runsScripts };
+    if (out.html.length * 2 <= CACHE_MAX_BYTES) {
       cache.set(key, out);
-      cacheBytes += out.length;
+      cacheBytes += out.html.length;
       while (cache.size > CACHE_MAX_ENTRIES || cacheBytes > CACHE_MAX_BYTES / 2) {
         const oldest = cache.keys().next().value as string;
-        cacheBytes -= cache.get(oldest)?.length ?? 0;
+        cacheBytes -= cache.get(oldest)?.html.length ?? 0;
         cache.delete(oldest);
       }
     }
     return out;
   } catch {
-    return BLOCKED_DOCUMENT;
+    return { html: BLOCKED_DOCUMENT, runsScripts: false };
+  }
+}
+/** The sanitized document with scripts allowed (the owner's view and the pages that may run scripts). */
+export const servedDocument = (html: string): string => servedDocumentInfo(html).html;
+/** Does the page run scripts? Decided from the sanitized document. A page that cannot be sanitized shows the fixed document: no scripts. */
+export const pageRunsScripts = (html: string): boolean => servedDocumentInfo(html).runsScripts;
+
+// ───────────────────────────────────────────────────────────────────────── data inlined into a scriptless page
+
+/** The attribute that binds an element's text to pushed data in a page without script: `data-tb-text="key.path.0.name"`. */
+export const BIND_ATTR = "data-tb-text";
+/** Elements whose text the serializer does not escape (raw text): data never goes into them. */
+const RAW_TEXT_ELEMENTS = new Set(["style", "script", "xmp", "iframe", "noembed", "noframes", "plaintext", "noscript"]);
+const BIND_MAX_CHARS = 2000;
+
+function lookup(values: Record<string, unknown>, path: string): unknown {
+  let cur: unknown = values;
+  for (const part of path.split(".")) {
+    if (cur === null || typeof cur !== "object" || !Object.hasOwn(cur, part)) return undefined;
+    cur = (cur as Record<string, unknown>)[part];
+  }
+  return cur;
+}
+const textOfValue = (v: unknown): string => {
+  if (v === undefined || v === null) return "";
+  const t = typeof v === "string" ? v : typeof v === "object" ? JSON.stringify(v) : String(v);
+  return t.length > BIND_MAX_CHARS ? `${t.slice(0, BIND_MAX_CHARS - 1)}…` : t;
+};
+
+/** Does the (sanitized) document bind any data? */
+export const bindsData = (html: string): boolean => html.includes(BIND_ATTR);
+
+/** Serve-time data for a page without script: every element with `data-tb-text="<key>[.<path>]"` gets that value as its only
+ *  child text (escaped by the serializer; never into raw-text elements). Unknown paths give empty text. Only text is inserted,
+ *  so the sanitizer's guarantees hold for the result. On any failure the document is returned unbound. */
+export function bindData(html: string, values: Record<string, unknown>): string {
+  if (!bindsData(html)) return html;
+  try {
+    const doc = parseBounded(html);
+    const stack: Parent[] = [doc];
+    while (stack.length > 0) {
+      const parent = stack.pop() as Parent;
+      for (const child of parent.childNodes as Node[]) {
+        if (child.nodeName === "#text" || child.nodeName === "#comment" || child.nodeName === "#documentType") continue;
+        const el = child as El;
+        const path = el.attrs?.find((a) => a.name === BIND_ATTR)?.value;
+        if (path !== undefined && !RAW_TEXT_ELEMENTS.has(el.tagName.toLowerCase())) {
+          el.childNodes = [];
+          defaultTreeAdapter.insertText(el, textOfValue(lookup(values, path.trim())));
+          continue;
+        }
+        stack.push(el);
+        const content = (el as unknown as { content?: Parent }).content;
+        if (content) stack.push(content);
+      }
+    }
+    return serialize(doc);
+  } catch {
+    return html;
   }
 }

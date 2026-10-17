@@ -4,7 +4,7 @@ import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, isRestorePending, markRestored, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
+import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, isRestorePending, markRestored, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -25,6 +25,7 @@ const docPath = async (tok: string): Promise<string> => `/v/live-artifacts/${((a
 const linkIdOf = (tok: string): string => String(db.prepare("SELECT id FROM la_link WHERE token_digest = ?").get(opaqueDigest(tok))?.id);
 const run = async (opId: keyof typeof handlers, input: unknown, ctx: OpContext): Promise<Out> => (await handlers[opId].run(input as never, ctx)) as Out;
 
+const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
 function link(id: string, opts: { pin?: number | null; expires?: number; revoked?: boolean; kind?: "viewer" | "preview" } = {}): string {
   const token = newToken();
   db.prepare(
@@ -135,8 +136,9 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
     assert.match(shellCsp(CFG, true), /frame-ancestors https:\/\/bridge-abc\.up\.railway\.app/);
     assert.equal(r.headers.get("set-cookie"), null);
   });
-  it("document: sandbox (opaque origin), connect-src none, framed only by the views origin", async () => {
+  it("document (a page that runs a script): sandbox allow-scripts (opaque origin), connect-src none, framed only by the views origin", async () => {
     const id = await page();
+    setHtml(id, "<!doctype html><html><head><title>x</title></head><body>v1<script>window.x=1</script></body></html>");
     const tok = link(id);
     const path = await docPath(tok);
     assert.ok(!path.includes(tok), "the document URL never contains the link token (agent code can read its URL)");
@@ -148,7 +150,95 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
     assert.ok(!/allow-same-origin|allow-top-navigation|allow-popups|allow-forms/.test(csp), "no sandbox escape tokens");
     const html = await r.text();
     assert.ok(html.startsWith("<!DOCTYPE html><script>"), "the helper is the first script, right after the doctype");
-    assert.ok(html.endsWith("<body>v1</body></html>"));
+    assert.ok(html.endsWith("<body>v1<script>window.x=1</script></body></html>"));
+  });
+});
+
+describe("scriptless render (C239)", () => {
+  const SCRIPT_PAGE = '<!doctype html><html><body><h1 id="h">Scripts</h1><div onclick="x()">c</div><script>tb.ready()</script></body></html>';
+  const FREE_PAGE = '<!doctype html><html><head><style>h1{color:#123}</style></head><body><h1 id="h">Totals</h1><p>Total: <b data-tb-text="n.total">?</b></p><p data-tb-text="n.rows.1.name">?</p><i data-tb-text="n.missing">gone</i></body></html>';
+  async function dataPage(html: string): Promise<{ id: string; tok: string }> {
+    const id = await page();
+    setHtml(id, html);
+    db.prepare("UPDATE la_source SET approved_digest = digest, viewers = 1 WHERE artifact_id = ? AND key = 'n'").run(id);
+    db.prepare("INSERT OR REPLACE INTO la_snapshot (artifact_id, key, data_json, bytes, status, fetched_at) VALUES (?, 'n', ?, 10, 'ok', ?)").run(
+      id,
+      JSON.stringify({ total: 42, rows: [{ name: "a" }, { name: "<b>x</b>&amp;" }] }),
+      now,
+    );
+    return { id, tok: link(id) };
+  }
+  it("a page without script gets the scriptless CSP: script-src none and a sandbox without allow-scripts, no helper", async () => {
+    const { tok } = await dataPage(FREE_PAGE);
+    const r = get(await docPath(tok));
+    const csp = r.headers.get("content-security-policy") ?? "";
+    assert.equal(csp, scriptlessDocumentCsp(CFG));
+    assert.match(csp, /^sandbox; /);
+    assert.match(csp, /script-src 'none'/);
+    assert.ok(!/allow-scripts|unsafe-inline'[^;]*;[^;]*script/.test(csp.split("; ").filter((d) => d.startsWith("sandbox") || d.startsWith("script-src")).join(";")), "no allow-scripts");
+    assert.match(csp, /connect-src 'none'/);
+    assert.match(csp, /img-src data:(;|$)/);
+    const html = await r.text();
+    assert.ok(!html.includes("<script"), "no helper and no script element");
+    assert.ok(html.includes("<h1 id=\"h\">Totals</h1>"));
+  });
+  it("the data is inlined at serve time: values as escaped text, unknown paths empty, nothing is fetched", async () => {
+    const { tok } = await dataPage(FREE_PAGE);
+    const html = await get(await docPath(tok)).text();
+    assert.match(html, /<b data-tb-text="n\.total">42<\/b>/);
+    assert.match(html, /<p data-tb-text="n\.rows\.1\.name">&lt;b&gt;x&lt;\/b&gt;&amp;amp;<\/p>/, "agent data is text, never markup");
+    assert.match(html, /<i data-tb-text="n\.missing"><\/i>/);
+    assert.ok(!/fetch|XMLHttpRequest/.test(html));
+    // /data tells the shell: scriptless, no scripts, and a revision of the inlined data
+    const d = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
+    assert.equal(d.scriptless, true);
+    assert.equal(d.runsScripts, false);
+    assert.match(d.docRev, /^sha256:/);
+    const before = d.docRev;
+    db.prepare("UPDATE la_snapshot SET data_json = ? WHERE key = 'n'").run(JSON.stringify({ total: 43 }));
+    const d2 = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
+    assert.notEqual(d2.docRev, before, "the shell reloads the frame when the inlined data changes");
+    assert.match(await get(await docPath(tok)).text(), /<b data-tb-text="n\.total">43<\/b>/);
+  });
+  it("data never goes into a raw-text element, and a page that binds nothing has no docRev", async () => {
+    const { tok } = await dataPage('<!doctype html><html><head><style data-tb-text="n.total">a{color:red}</style></head><body><p data-tb-text="n.total">?</p></body></html>');
+    const html = await get(await docPath(tok)).text();
+    assert.ok(html.includes("<style data-tb-text=\"n.total\">a{color:red}</style>"), "the style text is untouched");
+    const plain = await dataPage("<!doctype html><html><body>static</body></html>");
+    assert.equal(((await get(`/v/live-artifacts/${plain.tok}/data`).json()) as Out).docRev, null);
+  });
+  it("a page that runs scripts keeps them for a link approved for scripts, and the shell is told", async () => {
+    const id = await page();
+    setHtml(id, SCRIPT_PAGE);
+    const tok = link(id);
+    const r = get(await docPath(tok));
+    assert.equal(r.headers.get("content-security-policy"), documentCsp(CFG));
+    const html = await r.text();
+    assert.ok(html.includes("<script>tb.ready()</script>") && html.includes('onclick="x()"'));
+    const d = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
+    assert.equal(d.scriptless, false);
+    assert.equal(d.runsScripts, true);
+  });
+  it("a link NOT approved for scripts (scripts_ok = 0) gets the scriptless render even when the page gained scripts", async () => {
+    const id = await page();
+    setHtml(id, SCRIPT_PAGE);
+    const tok = link(id);
+    db.prepare("UPDATE la_link SET scripts_ok = 0 WHERE token_digest = ?").run(opaqueDigest(tok));
+    const r = get(await docPath(tok));
+    assert.equal(r.headers.get("content-security-policy"), scriptlessDocumentCsp(CFG));
+    const html = await r.text();
+    assert.ok(!html.includes("<script") && !html.includes("onclick"), `scripts and handlers are removed: ${html}`);
+    assert.ok(html.includes("Scripts</h1>"), "the rest of the page stays");
+    const d = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
+    assert.equal(d.scriptless, true);
+    assert.equal(d.runsScripts, true, "the owner still sees that the page itself runs scripts");
+  });
+  it("the owner's preview of a page without scripts is the same scriptless render", async () => {
+    const { id } = await dataPage(FREE_PAGE);
+    const tok = link(id, { kind: "preview" });
+    const r = get(await docPath(tok));
+    assert.equal(r.headers.get("content-security-policy"), scriptlessDocumentCsp(CFG, true));
+    assert.match(await r.text(), /<b data-tb-text="n\.total">42<\/b>/);
   });
 });
 
@@ -237,7 +327,7 @@ describe("every served agent document is sanitized (C238)", () => {
     set(id, "<div>".repeat(5000));
     const r = get(await docPath(link(id)));
     assert.equal(r.status, 200);
-    assert.equal(r.headers.get("content-security-policy"), documentCsp(CFG));
+    assert.equal(r.headers.get("content-security-policy"), scriptlessDocumentCsp(CFG), "the fixed document runs no script");
     assert.match(await r.text(), /This page cannot be shown/);
   });
 });

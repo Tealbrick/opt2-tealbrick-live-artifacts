@@ -14,7 +14,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { servedDocumentOf } from "./sanitize.ts";
+import { bindData, bindsData, servedDocumentInfo } from "./sanitize.ts";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
@@ -119,6 +119,42 @@ export function documentCsp(cfg: ViewerConfig, preview = false): string {
     `frame-ancestors ${ancestors}`,
   ].join("; ");
 }
+/** CSP of the scriptless render (C239): a page that runs no script, or a link the owner did not approve for scripts. No script
+ *  can run: `script-src 'none'`, and the CSP sandbox has no `allow-scripts` either. Nothing is fetched (data was inlined when it
+ *  was served), so `img-src` is data: only. Still a sandbox (opaque origin), still framed only by the shell. */
+export function scriptlessDocumentCsp(cfg: ViewerConfig, preview = false): string {
+  const ancestors = [cfg.viewOrigin ?? "'none'", ...(preview && cfg.mainOrigin ? [cfg.mainOrigin] : [])].join(" ");
+  return [
+    "sandbox",
+    "default-src 'none'",
+    "script-src 'none'",
+    "style-src 'unsafe-inline'",
+    "img-src data:",
+    "font-src data:",
+    "media-src data:",
+    "connect-src 'none'",
+    "frame-src 'none'",
+    "worker-src 'none'",
+    "object-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    `frame-ancestors ${ancestors}`,
+  ].join("; ");
+}
+
+/** Which document a link gets for this page code: the page as it is (scripts allowed) only when the page runs scripts AND the
+ *  owner approved this link for that; otherwise the scriptless render (scripts removed). Decided from the sanitized document. */
+export function renderFor(htmlText: string, link: LinkRow): { html: string; scriptless: boolean; runsScripts: boolean } {
+  const full = servedDocumentInfo(htmlText);
+  if (full.runsScripts && link.scriptsOk) return { html: full.html, scriptless: false, runsScripts: true };
+  return { html: full.runsScripts ? servedDocumentInfo(htmlText, { allowScripts: false }).html : full.html, scriptless: true, runsScripts: full.runsScripts };
+}
+const valuesOf = (sources: Record<string, Json>): Record<string, Json> => {
+  const out: Record<string, Json> = {};
+  for (const [k, v] of Object.entries(sources)) if (v !== null && typeof v === "object" && !Array.isArray(v) && "data" in v) out[k] = (v as Record<string, Json>).data as Json;
+  return out;
+};
+
 /** Every answer carries the shared floor (VIEWER_HEADER_FLOOR, manifest 0.1.21, L1; the SDK forces it again) and replaces
  *  only the CSP with one of ours; `extra` may mark content-hashed assets cacheable. */
 function respond(status: number, body: string | null, type: string, csp: string, extra: Record<string, string> = {}): Response {
@@ -138,6 +174,8 @@ export interface LinkRow {
   artifactId: string;
   kind: "viewer" | "preview";
   pinVersion: number | null;
+  /** the owner approved this link for a page that runs scripts; false = always the scriptless render */
+  scriptsOk: boolean;
 }
 // ─────────────────────────────────────────────────────────── restore (S6 review S3-3)
 
@@ -180,7 +218,7 @@ function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number)
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;
-  return { id: String(r.id), artifactId: String(r.artifact_id), kind: String(r.kind) as LinkRow["kind"], pinVersion: r.pin_version === null ? null : Number(r.pin_version) };
+  return { id: String(r.id), artifactId: String(r.artifact_id), kind: String(r.kind) as LinkRow["kind"], pinVersion: r.pin_version === null ? null : Number(r.pin_version), scriptsOk: Number(r.scripts_ok ?? 1) === 1 };
 }
 
 /** Owner preview: a 10-minute token for one version (default: the staged one if any, else the live one). */
@@ -254,6 +292,8 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
   }
   const every = a.refresh_every_s === null ? null : Number(a.refresh_every_s);
   const stale = every !== null && Number(a.refresh_approved) === 1 && (newest === null || now - newest > 2 * every * 1000);
+  const shown = versionRow(db, link.artifactId, versionFor(db, link));
+  const render = shown ? renderFor(Buffer.from(shown.html as Uint8Array).toString("utf8"), link) : null;
   const body = {
     title: String(a.title),
     workspace: cfg.workspaceName,
@@ -265,6 +305,10 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
     stale: stale || String(a.refresh_state) === "paused_error",
     refresh: { state: String(a.refresh_state), everySeconds: every },
     sources,
+    // the shell frames a scriptless document without allow-scripts and reloads it when its inlined data changes
+    scriptless: render?.scriptless ?? true,
+    runsScripts: render?.runsScripts ?? false,
+    docRev: render?.scriptless && bindsData(render.html) ? digest(valuesOf(sources)) : null,
   };
   return { ...body, rev: digest(body as Json) };
 }
@@ -311,8 +355,13 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     const v = versionRow(db, link.artifactId, t.n);
     if (!v) return notFound();
     // every agent document is sanitized on the way out (C238): owner preview and public link share this one call
-    const html = injectHelper(servedDocumentOf(v));
-    return respond(200, html, "text/html; charset=utf-8", documentCsp(cfg, link.kind === "preview"));
+    const render = renderFor(Buffer.from(v.html as Uint8Array).toString("utf8"), link);
+    const preview = link.kind === "preview";
+    if (!render.scriptless) return respond(200, injectHelper(render.html), "text/html; charset=utf-8", documentCsp(cfg, preview));
+    // scriptless render (C239): no helper, no script can run, and the data is inlined now so the page needs no fetch
+    let doc = render.html;
+    if (bindsData(doc)) doc = bindData(doc, valuesOf(((viewData(db, link, cfg, now) as Record<string, Json>).sources ?? {}) as Record<string, Json>));
+    return respond(200, doc, "text/html; charset=utf-8", scriptlessDocumentCsp(cfg, preview));
   }
   const link = resolveToken(db, rest[0] ?? "", now);
   if (!link) return notFound();

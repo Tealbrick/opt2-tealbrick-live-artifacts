@@ -6,6 +6,7 @@
 // There is no early refusal before the hold: the SDK access and pause checks come first for every caller (543880d).
 import { digest } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
+import { pageRunsScripts } from "./sanitize.ts";
 import { artifactRow, versionRow } from "./store.ts";
 
 /** The sha256 stand-in for a viewer-visible push source that has no data yet. */
@@ -19,7 +20,13 @@ export interface ShareExpect {
   data: { key: string; sha256: string }[];
   /** sha256 over the whole source list: key, kind, label, binding digest, approved, shown to link viewers */
   sourcesSha256: string;
+  /** the SANITIZED page code of this version runs scripts (a script element or an inline event handler; decided by the
+   *  server, C239). The hold text carries the sentence the owner approves; a page that gains scripts is page_changed. */
+  runsScripts: boolean;
 }
+
+/** Does this version of the page run scripts? Decided from the sanitized document, never from anything the agent says. */
+export const versionRunsScripts = (v: Record<string, unknown>): boolean => pageRunsScripts(Buffer.from(v.html as Uint8Array).toString("utf8"));
 
 /** Push sources that link viewers see, with the live data they would get. */
 export function visiblePushData(db: Db, artifactId: string): { key: string; label: string; sha256: string; bytes: number }[] {
@@ -61,6 +68,7 @@ export function shareExpectOf(db: Db, artifactId: string, n: number): ShareExpec
     title: String(a.title),
     data: visiblePushData(db, artifactId).map((d) => ({ key: d.key, sha256: d.sha256 })),
     sourcesSha256: sourcesSha256(db, artifactId),
+    runsScripts: versionRunsScripts(v),
   };
 }
 
@@ -76,6 +84,7 @@ export function shareMismatch(db: Db, artifactId: string, pin: number | null | u
   if (e.htmlSha256 !== now.htmlSha256) out.push("page code");
   if (e.title !== now.title) out.push("title");
   if (e.sourcesSha256 !== now.sourcesSha256) out.push("data sources");
+  if (e.runsScripts !== now.runsScripts) out.push("scripts");
   if (JSON.stringify(e.data.map((d) => [d.key, d.sha256])) !== JSON.stringify(now.data.map((d) => [d.key, d.sha256]))) out.push("pushed data");
   return out;
 }

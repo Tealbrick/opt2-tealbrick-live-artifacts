@@ -60,7 +60,7 @@ import {
   type TriggerApproveInput,
 } from "#kit";
 import { companionOps, EMPTY_CONTRACT, normalizeContract, parseStoredContract, type RawContract } from "./contract.ts";
-import { flagHold, holdFlagged, shareExpectOf, shareMismatch } from "./expect.ts";
+import { flagHold, holdFlagged, shareExpectOf, shareMismatch, versionRunsScripts } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
 import { createLink, galleryOfLink, listLinks, publishHoldText, publishMismatch, revokeLink, shareHoldText } from "./links.ts";
 import { type LintItem, lintErrors, lintHtml } from "./lint.ts";
@@ -534,6 +534,8 @@ export const handlers = {
       return {
         artifact: toDetail(ctx.db, a, now),
         version: versionOut(v),
+        // the SANITIZED version runs scripts (the share step shows the sentence the owner approves; C239)
+        runsScripts: versionRunsScripts(v),
         versions: versionsOf(ctx.db, a),
         sources: sourcesOf(ctx.db, i.id),
         links: linksOf(ctx.db, i.id, now),
