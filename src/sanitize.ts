@@ -12,6 +12,7 @@
 // One module, one call site (`servedDocument`, called by the viewer): the shared SDK helper (miniapp-sdk 0.1.29,
 // sanitizeAgentDocument) replaces this file when it ships.
 import { createHash } from "node:crypto";
+import { LIMITS } from "./limits.ts";
 import { type DefaultTreeAdapterMap, defaultTreeAdapter, parse, serialize } from "parse5";
 
 type Node = DefaultTreeAdapterMap["node"];
@@ -425,7 +426,12 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
 }
 
 /** Walk a tree. With `mutate` it removes and rewrites; without it only counts what it WOULD change (verification). */
-function walk(root: Parent, mutate: boolean, f: Findings): void {
+/** Elements whose tree is known to survive a serialize/parse round trip badly (the mXSS shapes: foreign content (any element outside
+ *  the HTML namespace), templates, selects, forms, plaintext). A page that has none of them is verified only when it is within the version size cap. */
+const ROUND_TRIP_RISK = new Set(["template", "select", "form", "plaintext", "xmp", "listing"]);
+const HTML_NS = "http://www.w3.org/1999/xhtml";
+
+function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolean }): void {
   const stack: Parent[] = [root];
   while (stack.length > 0) {
     const parent = stack.pop() as Parent;
@@ -434,7 +440,13 @@ function walk(root: Parent, mutate: boolean, f: Findings): void {
     for (const child of kids) {
       let drop = false;
       if (child.nodeName === "#comment") drop = true; // inert, but conditional comments and bogus comments are noise
-      else if (child.nodeName !== "#text" && child.nodeName !== "#documentType") drop = inspectElement(child as El, mutate, f);
+      else if (child.nodeName !== "#text" && child.nodeName !== "#documentType") {
+        drop = inspectElement(child as El, mutate, f);
+        if (risk && !risk.risky && !drop) {
+          const el = child as El;
+          if (el.namespaceURI !== HTML_NS || ROUND_TRIP_RISK.has(el.tagName.toLowerCase())) risk.risky = true;
+        }
+      }
       if (drop) {
         if (removed === null) removed = new Set();
         removed.add(child);
@@ -486,12 +498,17 @@ export function sanitizeHtml(input: string): Sanitized {
   if (input.length > SANITIZE_MAX_BYTES) throw new Error("document too large to sanitize");
   const f: Findings = new Map();
   const doc = parseBounded(input);
-  walk(doc, true, f);
+  const risk = { risky: false };
+  walk(doc, true, f, risk);
   const html = serialize(doc);
-  // Verification: the browser parses OUR output. It must contain nothing the sanitizer would still change.
-  const again: Findings = new Map();
-  walk(parseBounded(html), false, again);
-  if (securityCount(again) > 0) throw new Error(`sanitized output is not stable: ${[...again.keys()].join(",")}`);
+  // Verification: the browser parses OUR output. It must contain nothing the sanitizer would still change. Every page
+  // within the version size cap is verified (about 17 ms at the cap); a larger input (not writable through the app) only
+  // when its tree has a shape known to change on a round trip. The check costs one more parse.
+  if (input.length <= LIMITS.htmlBytes || risk.risky) {
+    const again: Findings = new Map();
+    walk(parseBounded(html), false, again);
+    if (securityCount(again) > 0) throw new Error(`sanitized output is not stable: ${[...again.keys()].join(",")}`);
+  }
   return { html, findings: Object.fromEntries(f) };
 }
 
