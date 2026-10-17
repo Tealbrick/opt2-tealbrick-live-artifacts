@@ -88,6 +88,9 @@ const LINK_ATTRS: Record<string, ReadonlySet<string>> = {
   button: new Set(["formaction"]),
   input: new Set(["formaction"]),
 };
+/** Elements whose job is to load the address: when it is outside they are removed, with their content. On any other element
+ *  (body, table, td, math, svg gradients …) only the attribute goes, so a stray `background=` never takes a whole page with it. */
+const LOADERS = new Set(["img", "image", "video", "audio", "source", "track", "input", "script", "use", "feimage", "tref", "font-face-uri", "cursor", "bgsound", "frame", "keygen"]);
 /** Attributes that hold CSS (a `style` attribute and the SVG presentation attributes that accept `url()`). */
 const CSS_ATTRS = new Set(["style", "fill", "stroke", "filter", "mask", "clip-path", "marker", "marker-start", "marker-mid", "marker-end", "cursor", "clip", "list-style-image", "background-image", "mask-image"]);
 /** Elements removed with everything in them, whatever their attributes. */
@@ -368,9 +371,14 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
         rewritten = true;
         continue; // the element and its text stay; the address goes
       }
-      note(f, `url-attribute`);
-      remove = true;
-      break;
+      if (LOADERS.has(tag)) {
+        note(f, "url-attribute");
+        remove = true;
+        break;
+      }
+      note(f, "url-attribute-dropped");
+      rewritten = true;
+      continue;
     }
     if (CSS_ATTRS.has(key)) {
       const r = sanitizeCss(a.value);

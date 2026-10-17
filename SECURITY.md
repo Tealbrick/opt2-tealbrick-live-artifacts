@@ -11,9 +11,10 @@ It is the threat model of record for the app (the longer design is internal).
   document tickets that are not the link token.
 - Every document is sanitized on the server before it is served (owner preview and public link; `src/sanitize.ts`, parse5).
   It removes `<link>` (every rel), `<base>`, `<meta http-equiv>`, `<portal>`, frames and objects, `<script type=speculationrules>`,
-  every element whose URL attribute (`src`, `href`, `srcset`, `action`, `formaction`, `ping`, `poster`, `background`,
-  `xlink:href` …) is not `data:` or relative, and every CSS `url()`, `@import` and `image-set()` that is not `data:` or relative.
-  A link or form keeps its text and loses only its address. If the parser fails, the page is too large or too deeply nested,
+  every URL attribute (`src`, `href`, `srcset`, `action`, `formaction`, `ping`, `poster`, `background`, `xlink:href` …) that is not
+  `data:` or relative (an element that loads the address, such as `img`, `video`, `input`, `script`, `use`, is removed with its
+  content; on any other element, such as a link, a form, `body` or `td`, only the attribute goes and the content stays), and every
+  CSS `url()`, `@import` and `image-set()` that is not `data:` or relative (the `url()` becomes `url("data:,")`). If the parser fails, the page is too large or too deeply nested,
   or the sanitized output does not pass a second parse, the fixed "This page cannot be shown" document is served.
 - A page WITHOUT script therefore makes no network request by static markup (proved in real Chrome by `test/browser/canary.test.ts`).
 
@@ -28,7 +29,10 @@ It is the threat model of record for the app (the longer design is internal).
   viewer opened the page, from which address and when, and anything the page itself knows (what the owner chose to show on it).
   It cannot read your Tealbrick data or session. Copy for people: "The page cannot read your Tealbrick data or session. In some
   browsers it can contact outside sites. Do not type private information into it." The public-link banner keeps "never enter
-  passwords here". The channels measured per run are in the canary test output.
+  passwords here". Measured with `test/browser/canary.test.ts` (Chrome 155, Playwright, through the sanitizer and our headers, one script page per channel):
+  a `<link rel=prerender>` added by script REACHES the canary (1 request); `<a>.click()` opens a TCP connection (0 requests); speculation
+  rules (prerender and prefetch), `<link rel=prefetch>`, `preconnect` and `dns-prefetch` added by script did not reach it in that run;
+  `fetch` is blocked by CSP. These are recorded, never asserted to be 0, and can differ by browser and version. WebRTC (R2) is not measured.
 - **R4 Copying.** Anything a page shows to a viewer can be copied. Data sources default to "not shown to people with a link".
 - **R5 Link tokens in hosting logs.** Our code never logs the link token in the path. The hosting platform's own HTTP logs in the
   customer's project (owner access only) can contain the request path, so a token can appear there. Accepted: short default

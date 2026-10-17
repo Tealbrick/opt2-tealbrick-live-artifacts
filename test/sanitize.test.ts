@@ -129,6 +129,8 @@ describe("sanitizer: URL attributes", () => {
     }
   });
   it("every URL attribute is checked: src href srcset action formaction ping poster background xlink:href data", () => {
+    // loaders are removed; other elements (table, td, math …) keep their content and lose only the address
+    const keepsElement = [/<table/, /<td/, /<math/];
     const cases: [string, RegExp][] = [
       ['<video src="http://x.test/v.mp4"></video>', /<video/],
       ['<audio src="//x.test/a.mp3"></audio>', /<audio/],
@@ -150,7 +152,12 @@ describe("sanitizer: URL attributes", () => {
       ['<svg><script href="http://x.test/a.js"></script></svg>', /<script/],
       ['<math href="http://x.test/"><mi>x</mi></math>', /<math/],
     ];
-    for (const [html, gone] of cases) assert.ok(!has(html, gone), html);
+    for (const [html, gone] of cases) {
+      assert.ok(!clean(html).includes("x.test"), `address left: ${html}`);
+      if (!keepsElement.some((k) => k.source === gone.source)) assert.ok(!has(html, gone), html);
+    }
+    assert.ok(has('<table background="http://x.test/b.png"><tr><td>cell</td></tr></table>', /<td>cell<\/td>/), "content stays");
+    assert.ok(has('<html><body background="//x.test/b.png"><p>page</p></body></html>', /<p>page<\/p>/), "a stray body background never takes the page");
     assert.ok(has('<img srcset="data:image/png;base64,AA,BB 1x, c.png 2x">', /<img/), "a data: URL may hold commas");
     assert.ok(has('<svg><use href="#a"/></svg>', /<use/), "a fragment is relative");
   });
