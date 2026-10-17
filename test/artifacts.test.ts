@@ -6,7 +6,7 @@ import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, NO_GALLERY, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { artifactRow, GALLERY, pruneVersions, SHARED_GALLERY } from "../src/store.ts";
-import { AGENT_A, AGENT_B, CRUD, ctxFor, type Instance, migratedDb, OWNER } from "./helpers.ts";
+import { AGENT_A, AGENT_B, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
 type Out = Record<string, any>;
 const run = async (opId: keyof typeof handlers, input: unknown, ctx: OpContext): Promise<Out> => (await handlers[opId].run(input as never, ctx)) as Out;
@@ -41,10 +41,18 @@ beforeEach(async () => {
   now = Date.UTC(2026, 9, 17, 12, 0, 0);
   setClock(() => now);
   bindScopeDb(db);
-  await definition.onStart?.({ db, scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
+  await definition.onStart?.({ db, secrets: memorySecrets(), scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
 });
 
 describe("galleries and access", () => {
+  it("an app caller's page records the VERIFIED product as its origin, not its display name", async () => {
+    const app = { type: "app" as const, id: "ins_01J0000000000000000000000X", name: "Totally Trusted Bank", product: "open-design" };
+    const ctx = ctxFor(db, app as never, { shared: CRUD.contribute }, instances);
+    const out = (await handlers.artifact_create.run({ gallery: "shared", title: "From an app", view: { html: "<p>x</p>" } } as never, ctx)) as { id: string };
+    const row = db.prepare("SELECT origin_kind, origin_ref, created_by_name FROM la_artifact WHERE id = ?").get(out.id);
+    assert.deepEqual([row?.origin_kind, row?.origin_ref], ["app", "open-design"]);
+    assert.equal(row?.created_by_name, "Totally Trusted Bank", "the display name is only a label");
+  });
   it("onStart makes the shared gallery; an agent's first call makes its own; galleries_list shows access levels", async () => {
     assert.deepEqual(instances, [{ type: GALLERY, id: SHARED_GALLERY, label: "Shared", shared: true }]);
     const out = await run("galleries_list", {}, A());

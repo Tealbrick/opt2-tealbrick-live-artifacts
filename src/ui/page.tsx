@@ -1,6 +1,7 @@
 // Page (id "artifact", path /page/<id>): the preview, the review of what the page may show, its data sources, schedule,
 // links and versions. Matches the approved mockup (coordination/design/mockups/build-app-live-artifacts.ts).
-// There is no owner "Refresh now" op, and links come with S4, so neither is here.
+// There is no owner "Refresh now" op. Links (S4): the Links box lists the page's links, with Create link and Revoke; step 3
+// of the review makes a link too. The address of a new link is shown once.
 import { appName, Button, Dialog, Field, Notice, StepFlow, Swatch, Switch, Table, Tag, TextInput, TextLink } from "@opt2-tealbrick/ui";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -24,6 +25,7 @@ import {
 } from "./api.ts";
 import { Failure, LoadFailed, PageHead, useAct } from "./common.tsx";
 import { PageTags } from "./gallery.tsx";
+import { CreatedLink, EMPTY_FORM, formInput, LINK_STATUS_TAG, type LinkForm, LinkFormFields, RevokeDialog, useDefaultDays } from "./links.tsx";
 
 type Ticket = { kind: "loading" } | { kind: "ok"; url: string; version: number } | { kind: "missing" } | { kind: "error"; message: string };
 type TestOut = Out<"source_test"> | { error: string };
@@ -133,6 +135,12 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
   const [typed, setTyped] = useState("");
   const [tests, setTests] = useState<Record<string, TestOut>>({});
   const [drafts, setDrafts] = useState<Record<string, boolean>>({});
+  // links: the form (shared by the dialog and step 3), the address of a link just made (shown once), the link to revoke
+  const [linking, setLinking] = useState(false);
+  const [form, setForm] = useState<LinkForm>(EMPTY_FORM);
+  const [created, setCreated] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [revoking, setRevoking] = useState<Link | null>(null);
+  const defaultDays = useDefaultDays();
   const { busy, error, setError, act } = useAct();
   const seq = useRef(0);
   const ticketSeq = useRef(0);
@@ -172,6 +180,8 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
     setTests({});
     setDrafts({});
     setPreviewVersion(undefined);
+    setForm(EMPTY_FORM);
+    setCreated(null);
     setError(null);
     void load();
     void loadTicket();
@@ -228,6 +238,20 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
     setPreviewVersion(v);
     void loadTicket(v);
   };
+  const makeLink = () =>
+    change(async () => {
+      const out = await run("link_create", formInput(id, form, defaultDays));
+      setCreated({ url: out.url, expiresAt: out.expiresAt });
+    });
+  const revokeLink = (l: Link) =>
+    change(
+      () => run("link_revoke", { linkId: l.id }),
+      () => setRevoking(null),
+    );
+  const closeLinking = () => {
+    setLinking(false);
+    setCreated(null);
+  };
   const viewersOf = (s: Source) => (s.approved ? s.viewers : (drafts[s.key] ?? false));
   const setViewers = (s: Source, on: boolean) => (s.approved ? void approve(s, on) : setDrafts((d) => ({ ...d, [s.key]: on })));
   const waits = [
@@ -261,7 +285,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
         </div>
       </PageHead>
       {a.description ? <p className="tb-soft la-desc">{a.description}</p> : null}
-      {reviewing || deleting ? null : <Failure message={error} />}
+      {reviewing || deleting || linking || revoking ? null : <Failure message={error} />}
       {loadError ? <LoadFailed message={loadError} retrying={loading} onRetry={() => void load()} /> : null}
       <div className="split">
         <div className="tb-stack">
@@ -374,10 +398,32 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
             ) : (
               <div className="ruled">
                 {detail.links.map((l) => (
-                  <LinkItem key={l.id} l={l} />
+                  <LinkItem
+                    key={l.id}
+                    l={l}
+                    busy={busy}
+                    onRevoke={() => {
+                      setError(null);
+                      setRevoking(l);
+                    }}
+                  />
                 ))}
               </div>
             )}
+            <div className="tb-ctas">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setError(null);
+                  setForm(EMPTY_FORM);
+                  setCreated(null);
+                  setLinking(true);
+                }}
+                disabled={busy || archived}
+              >
+                Create link
+              </Button>
+            </div>
           </section>
           <section className="tb-stack" aria-label="Versions">
             <h2>Versions</h2>
@@ -423,8 +469,14 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
         kicker={a.title}
         size="lg"
         busy={busy}
-        onClose={() => setReviewing(false)}
-        onFinish={() => setReviewing(false)}
+        onClose={() => {
+          setReviewing(false);
+          setCreated(null);
+        }}
+        onFinish={() => {
+          setReviewing(false);
+          setCreated(null);
+        }}
         steps={[
           {
             name: "Page",
@@ -456,9 +508,9 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 <Failure message={error} />
                 <h3>What data may this page show?</h3>
                 <p className="tb-soft">Page code written by an agent can see this data in the viewer’s browser. It cannot send it anywhere, but a viewer can copy what is on screen.</p>
-                {reads.length === 0 ? <p className="tb-soft">This page reads no data from your apps.</p> : null}
+                {detail.sources.length === 0 ? <p className="tb-soft">This page has no data sources.</p> : null}
                 <div className="la-checks">
-                  {reads.map((s) => (
+                  {detail.sources.map((s) => (
                     <div className="la-source" key={s.key}>
                       <h4>
                         {s.label} {sourceTag(s)}
@@ -492,21 +544,82 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
           },
           {
             name: "Link",
-            nextLabel: "Create link",
-            canNext: false,
+            optional: "Finish without a link",
+            nextLabel: created ? "Done" : "Create link",
+            canNext: created !== null || (ticket.kind !== "missing" && !archived),
+            onNext: async () => {
+              if (created) return true;
+              await makeLink(); // stays on the step: the address is shown once, then Done
+              return false;
+            },
             render: () => (
               <div className="tb-stack">
                 <h3>Who may open this page?</h3>
-                <p className="tb-soft">Today only you can open it, in this app. A link gives other people a view of the page without an account.</p>
-                <div className="tb-ctas">
-                  <Button disabled>Create link</Button>
-                  <span className="tb-hint">Links come in the next version</span>
-                </div>
+                <p className="tb-soft">
+                  Today only you can open it, in this app. A link gives other people a view of the page without an account. Anyone who has the address can open it until it ends or you revoke it. The app keeps counts only, no names or addresses.
+                </p>
+                <Failure message={error} />
+                {ticket.kind === "missing" ? <Notice tone="neutral">{VIEWER_MISSING}</Notice> : null}
+                {created ? (
+                  <CreatedLink url={created.url} expiresAt={created.expiresAt} />
+                ) : (
+                  <>
+                    <LinkFormFields form={form} onChange={setForm} versions={detail.versions} defaultDays={defaultDays} disabled={busy} />
+                    <Notice tone="neutral">
+                      <span className="tb-stack">
+                        <b>What a link cannot promise</b>
+                        <ul className="la-advice">
+                          <li>The page cannot send data over the network. In some browsers a very small signal can still get out, for example the names the page looks up or the set-up of a video call. That needs page code written for it and a viewer who opens the page.</li>
+                          <li>Everything the page shows can be copied by whoever sees it.</li>
+                          <li>A new version or new numbers from an agent wait for you before link holders see them. You can switch that off on the page.</li>
+                        </ul>
+                      </span>
+                    </Notice>
+                    <p className="tb-hint">{`${plural(detail.links.filter((l) => l.status === "active").length, "link")} of this page ${detail.links.filter((l) => l.status === "active").length === 1 ? "is" : "are"} active. At most 5.`}</p>
+                  </>
+                )}
               </div>
             ),
           },
         ]}
       />
+
+      <Dialog
+        open={linking}
+        title="Create a link"
+        kicker={a.title}
+        busy={busy}
+        onClose={closeLinking}
+        footer={
+          created ? (
+            <Button variant="primary" onClick={closeLinking}>
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button onClick={closeLinking} disabled={busy}>
+                Cancel
+              </Button>
+              <Button variant="primary" confirm onClick={() => void makeLink()} disabled={busy || ticket.kind === "missing"}>
+                Create link
+              </Button>
+            </>
+          )
+        }
+      >
+        <Failure message={error} />
+        {ticket.kind === "missing" ? <Notice tone="neutral">{VIEWER_MISSING}</Notice> : null}
+        {created ? (
+          <CreatedLink url={created.url} expiresAt={created.expiresAt} />
+        ) : (
+          <>
+            <p className="tb-soft">Anyone who has the address can open this page without an account until the link ends or you revoke it.</p>
+            <LinkFormFields form={form} onChange={setForm} versions={detail.versions} defaultDays={defaultDays} disabled={busy} />
+          </>
+        )}
+      </Dialog>
+
+      <RevokeDialog link={revoking} busy={busy} error={error} onClose={() => setRevoking(null)} onRevoke={() => revoking && void revokeLink(revoking)} />
 
       <Dialog
         open={deleting}
@@ -611,12 +724,13 @@ function ScheduleBox({ a, busy, onSet }: { a: ArtifactInfo; busy: boolean; onSet
   );
 }
 
-function LinkItem({ l }: { l: Link }) {
+function LinkItem({ l, busy, onRevoke }: { l: Link; busy: boolean; onRevoke: () => void }) {
+  const tag = LINK_STATUS_TAG[l.status];
   return (
     <div className="item">
       <Swatch />
       <h3>
-        {l.label} {l.status === "active" ? null : <Tag status={l.status === "revoked" ? "needs-you" : "idle"}>{l.status === "revoked" ? "Revoked" : "Ended"}</Tag>}
+        {l.label || "No label"} {l.status === "active" ? null : <Tag status={tag.status}>{tag.text}</Tag>}
       </h3>
       <p>
         Ends {dateOf(l.expiresAt)} · {l.pinVersion === null ? "latest version" : `pinned to version ${l.pinVersion}`}
@@ -625,6 +739,13 @@ function LinkItem({ l }: { l: Link }) {
         {plural(l.views, "view")}
         {l.lastSeenDay ? ` · last viewed ${dateOf(l.lastSeenDay)}` : ""}
       </span>
+      {l.status === "active" ? (
+        <div className="side">
+          <Button size="sm" variant="danger" onClick={onRevoke} disabled={busy}>
+            Revoke
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

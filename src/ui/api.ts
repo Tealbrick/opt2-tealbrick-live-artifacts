@@ -16,6 +16,7 @@ export type ArtifactInfo = Summary & { autoPublish: "owner" | "agent"; origin: {
 export type Source = Detail["sources"][number];
 export type Version = Detail["versions"][number];
 export type Link = Detail["links"][number];
+export type LinkRow = Out<"links_list">["items"][number];
 export type Refresh = Summary["refresh"];
 
 export function run<K extends keyof PersonOps>(op: K, input: In<K>): Promise<Out<K>> {
@@ -49,6 +50,12 @@ export function explain(e: unknown): string {
       return "That gallery is gone. Reload and try again.";
     case "view_origin_missing":
       return VIEWER_MISSING;
+    case "links_limit_artifact":
+      return "This page has 5 active links. Revoke one first.";
+    case "links_limit_workspace":
+      return "The workspace has 50 active links. Revoke one first.";
+    case "link_not_found":
+      return "That link is gone. Reload the page and look again.";
     case "invalid_input":
       return "Check the fields and try again.";
     default:
@@ -57,7 +64,14 @@ export function explain(e: unknown): string {
 }
 
 /** The normal state until the bridge has a viewer address (LA-1). */
-export const VIEWER_MISSING = "Previews need the viewer address. Ask Portal to redeploy the bridge.";
+export const VIEWER_MISSING = "Links and previews need the viewer address. Ask Portal to redeploy the bridge.";
+
+/** Lifetimes the owner can pick for a link, in days (a link never lasts longer than 90). */
+export const LINK_DAYS = [1, 7, 30, 90];
+export const daysLabel = (d: number): string => (d === 1 ? "1 day" : d === 90 ? "90 days (longest)" : `${d} days`);
+/** The lifetimes to offer: the standard ones plus the owner's own setting when it is another number. */
+export const lifetimeOptions = (current: number | null): { value: string; label: string }[] =>
+  (current !== null && !LINK_DAYS.includes(current) ? [...LINK_DAYS, current].sort((a, b) => a - b) : LINK_DAYS).map((d) => ({ value: String(d), label: daysLabel(d) }));
 
 // ── time ────────────────────────────────────────────────────────────────────
 

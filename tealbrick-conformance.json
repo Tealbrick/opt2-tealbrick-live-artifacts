@@ -22,6 +22,19 @@
       "capture": {
         "pageA": "/id"
       }
+    },
+    {
+      "id": "page_a_seen",
+      "as": "agentA",
+      "op": "artifact_get",
+      "input": {
+        "id": "${pageA}"
+      },
+      "capture": {
+        "shaA": "/version/sha256",
+        "verA": "/version/n",
+        "srcA": "/shareExpect/sourcesSha256"
+      }
     }
   ],
   "inputs": {
@@ -50,6 +63,29 @@
     },
     "artifact_refresh": {
       "id": "${pageA}"
+    },
+    "artifact_share": {
+      "id": "${pageA}",
+      "label": "Conformance link",
+      "expiresInDays": 7,
+      "expect": {
+        "version": "${verA}",
+        "htmlSha256": "${shaA}",
+        "title": "Conformance page",
+        "data": [],
+        "sourcesSha256": "${srcA}"
+      }
+    },
+    "artifact_publish": {
+      "id": "${pageA}",
+      "version": 1,
+      "data": [],
+      "expect": {
+        "htmlSha256": "${shaA}"
+      }
+    },
+    "artifact_link_revoke": {
+      "linkId": "lnk_00000000000000000000000000"
     }
   }
 }

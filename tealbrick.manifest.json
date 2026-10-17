@@ -422,7 +422,8 @@
         "additionalProperties": false,
         "required": [
           "artifact",
-          "version"
+          "version",
+          "shareExpect"
         ],
         "properties": {
           "artifact": {
@@ -1065,6 +1066,66 @@
           },
           "data": {
             "type": "object"
+          },
+          "shareExpect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version",
+              "htmlSha256",
+              "title",
+              "data",
+              "sourcesSha256"
+            ],
+            "description": "What artifact_share needs as expect for the version returned here (a link would show this version): copy it as it is.",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "Every push source that link viewers see (approved, shown to people with a link): its key and the sha256 of its data as it is now, or \"none\" if it has no data yet. An empty list when no push source is shown.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
+                  }
+                }
+              },
+              "sourcesSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
           }
         }
       },
@@ -1885,6 +1946,301 @@
                 }
               }
             }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_share",
+      "title": "Share a live page with a link",
+      "description": "Ask for a viewer link to a live page: anyone who has the link can open the page without an account until it ends or the owner revokes it. Read the page first with artifact_get (with version = your pin, if any) and pass its shareExpect as expect: the owner approves that page, and the call is refused with page_changed (409) if the page changed before it runs. The owner approves the link first (hold family public_link). The link address is in the answer of the approved retry only; repeat the same call with the same idempotency key after approval (the SDK keeps that answer sealed for 24 hours). At most 5 active links per page and 50 per workspace. Answers link_needs_hold (403) while your card does not hold public_link, and view_origin_missing (409) while the bridge has no viewer address.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "expect"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 40,
+            "description": "A name for this link, for example the person who gets it (at most 40 characters)."
+          },
+          "expiresInDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "description": "Days until the link ends. Default: the owner's setting (7 days unless the owner changed it)."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A version number to show on this link for its whole life, or null (default) to follow the live version."
+          },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version",
+              "htmlSha256",
+              "title",
+              "data",
+              "sourcesSha256"
+            ],
+            "description": "The page as artifact_get shows it in shareExpect: the version the link will show (the pinned one, else the live one), that version's sha256, the title, the pushed data link viewers would see, and the fingerprint of the data sources. Pass shareExpect as it is. The owner approves exactly this page; if any of it changed before the call runs (even after the owner approved), the call is refused with page_changed.",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "Every push source that link viewers see (approved, shown to people with a link): its key and the sha256 of its data as it is now, or \"none\" if it has no data yet. An empty list when no push source is shown.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
+                  }
+                }
+              },
+              "sourcesSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "The fingerprint of the page's list of data sources (labels, kinds, which ones link viewers see)."
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkId",
+          "url",
+          "expiresAt"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^lnk_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "expiresAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "outward",
+      "holdFamily": "public_link",
+      "idempotency": "required",
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_publish",
+      "title": "Make a version of a shared page live",
+      "description": "Make a version live for the people who hold a link: promote the staged version (and the staged pushed data you list), or roll back to an older version. The owner approves it first (hold family public_link) and sees the size, digest, data keys, title and sources that change. Pass expect.htmlSha256 (from artifact_get) and, to promote a staged title or description with the version, the same text in expect.title / expect.description; otherwise they stay staged. List each staged key with the digest artifact_data_put gave you in data; staged data you do not list stays staged. Answers link_needs_hold (403) while your card does not hold public_link, page_changed or staged_changed (409) if what you listed changed after you asked.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "version",
+          "expect"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "data": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "description": "Staged pushed data to publish with the version: each key with the digest artifact_data_put returned.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "digest"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                },
+                "digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              }
+            }
+          },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "htmlSha256"
+            ],
+            "description": "What the owner approves: the sha256 of the version (from artifact_get), and the staged title and/or description to promote with it. A staged title or description that you do not list here stays staged for the owner. Refused with page_changed (409) if any of it differs when the call runs.",
+            "properties": {
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 280
+              }
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "liveVersion",
+          "publishedKeys"
+        ],
+        "properties": {
+          "liveVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "publishedKeys": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+            }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "outward",
+      "holdFamily": "public_link",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_link_revoke",
+      "title": "Revoke a viewer link",
+      "description": "Stop a viewer link at once: its address answers not found from now on. Agents may always narrow who can see a page, so this is never held. Needs update access to the gallery of the page.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkId"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^lnk_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean"
           }
         }
       },
@@ -3313,6 +3669,290 @@
     },
     {
       "audience": "person",
+      "id": "link_create",
+      "title": "Create a viewer link",
+      "description": "The owner creates a viewer link for a page (no hold: the owner is the approver). The address is in the answer, shown once; the link table keeps only its digest, and the SDK keeps the answer sealed for 24 hours so a repeated request gets the same address. At most 5 active links per page and 50 per workspace. Answers view_origin_missing (409) while the bridge has no viewer address.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 40,
+            "description": "A name for this link, for example the person who gets it (at most 40 characters)."
+          },
+          "expiresInDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "description": "Days until the link ends. Default: the owner's setting (7 days unless the owner changed it)."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A version number to show on this link for its whole life, or null (default) to follow the live version."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkId",
+          "url",
+          "expiresAt"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^lnk_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "expiresAt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "outward",
+      "holdFamily": "public_link",
+      "idempotency": "required",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "link_revoke",
+      "title": "Revoke a viewer link",
+      "description": "Stop a viewer link at once: its address answers not found from now on.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkId"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^lnk_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "links_list",
+      "title": "Every viewer link",
+      "description": "All viewer links of all pages, newest first (at most 200): the Links page. Addresses are never listed.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "active"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "artifactId",
+                "artifactTitle",
+                "label",
+                "createdBy",
+                "createdAt",
+                "expiresAt",
+                "revokedAt",
+                "pinVersion",
+                "views",
+                "lastSeenDay",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "artifactId": {
+                  "type": "string",
+                  "minLength": 30,
+                  "maxLength": 30,
+                  "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "artifactTitle": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 40
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "revokedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pinVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "views": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "lastSeenDay": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 10
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "active": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "person",
       "id": "artifact_archive",
       "title": "Archive a page",
       "description": "Archive or restore a page. An archived page keeps its versions and data, does not refresh, and its links stop working.",
@@ -3558,6 +4198,12 @@
       "receipt": true
     }
   ],
+  "publicRoutes": [
+    {
+      "path": "/v",
+      "purpose": "viewer"
+    }
+  ],
   "companions": [
     {
       "product": "knowledge",
@@ -3646,7 +4292,7 @@
   "harnessHints": [
     {
       "harness": "generic",
-      "instructions": "When your answer is a report, table or dashboard the owner will want to open again, save it with live-artifacts__artifact_create (one self-contained HTML file, no network) instead of pasting it. Propose data sources in contract.inputs; the owner approves them. Use live-artifacts__artifact_data_put to push fresh numbers."
+      "instructions": "When your answer is a report, table or dashboard the owner will want to open again, save it with live-artifacts__artifact_create (one self-contained HTML file, no network) instead of pasting it. Propose data sources in contract.inputs; the owner approves them. Use live-artifacts__artifact_data_put to push fresh numbers. Ask for a viewer link with live-artifacts__artifact_share: the owner approves it, and the link address comes in the answer to the approved retry (same call, same idempotency key)."
     }
   ],
   "backups": {

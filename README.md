@@ -18,10 +18,12 @@ operation id (`src/app.ts`) and plain migrations (`migrations/`).
 | `tealbrick.manifest.json` | identity, runtime (data + backup volumes), operations, scopes, skills, backups, UI paths |
 | `src/app.ts` | `defineApp`: one typed handler per operation (op ids and I/O types from `#kit`), gallery access, agent first-sight event |
 | `src/store.ts` | the app's table access (plain functions over the SDK `Db`): artifacts, versions, sources, snapshots, links |
+| `src/links.ts` | viewer links: create (caps, expiry, pin), revoke, list, and the texts the owner reads on a hold |
+| `src/viewer.ts` | the viewer route handler (the SDK serves `/v/live-artifacts/…` and strips the prefix), tokens, tickets, CSPs |
 | `src/contract.ts` | the artifact contract (inputs, triggers; later-stage fields refused) and the binding digest |
 | `src/lint.ts` | write-time HTML lint (advice; the boundary is the sandboxed views origin) |
 | `src/limits.ts` | every size and count limit |
-| `tealbrick-conformance.json` | conformance setup fixtures (a page created as agent A for the id-addressed ops) |
+| `tealbrick-conformance.json` | conformance setup fixtures (a page created as agent A for the id-addressed ops, inputs for the link ops) and the A9 waiver |
 | `src/main.ts` | `startApp(app, process.env)` |
 | `src/ui/` | React UI (`<TbProvider>` + `<AppShell>` from `@opt2-tealbrick/ui`), built to `dist/ui` |
 | `src/ui/standard.tsx` | the standard pages (Holds, Receipts, Agents & scopes, Backups & export) and the page router; pass your own words as props, do not edit (one source: the template) |

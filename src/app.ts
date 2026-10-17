@@ -12,9 +12,22 @@
 // only; `include: data` returns the agents' own pushed data.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { CrudAction } from "@opt2-tealbrick/manifest";
+import { type CrudAction, digest } from "@opt2-tealbrick/manifest";
 import type { JobContext, JobsApi } from "@opt2-tealbrick/miniapp-sdk";
-import { type AppDefinition, type Db, defineApp, type HandlerSpec, type Json, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import {
+  type AppDefinition,
+  type Db,
+  defineApp,
+  type HandlerSpec,
+  type Json,
+  type OpContext,
+  type PublicHandler,
+  requireViewUrl,
+  type SdkAppDefinition,
+  type SdkOpContext,
+  TbError,
+  viewOriginMissing,
+} from "@opt2-tealbrick/miniapp-sdk";
 import {
   type ArtifactArchiveInput,
   type ArtifactCreateInput,
@@ -22,15 +35,21 @@ import {
   type ArtifactDeleteInput,
   type ArtifactDetailInput,
   type ArtifactGetInput,
+  type ArtifactLinkRevokeInput,
   type ArtifactListInput,
   type ArtifactNewInput,
   type ArtifactPreviewTicketInput,
+  type ArtifactPublishInput,
   type ArtifactRefreshInput,
   type ArtifactRemoveInput,
+  type ArtifactShareInput,
   type ArtifactUpdateInput,
   type AutopublishSetInput,
   type GalleriesListInput,
   type GalleryViewInput,
+  type LinkCreateInput,
+  type LinkRevokeInput,
+  type LinksListInput,
   OP,
   type OpId,
   type PublishVersionInput,
@@ -41,7 +60,9 @@ import {
   type TriggerApproveInput,
 } from "#kit";
 import { companionOps, EMPTY_CONTRACT, normalizeContract, parseStoredContract, type RawContract } from "./contract.ts";
+import { flagHold, holdFlagged, shareExpectOf, shareMismatch } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
+import { createLink, galleryOfLink, listLinks, publishHoldText, publishMismatch, revokeLink, shareHoldText } from "./links.ts";
 import { type LintItem, lintErrors, lintHtml } from "./lint.ts";
 import { project, REFRESH_JOB, recordTick, refreshArtifact } from "./refresh.ts";
 import {
@@ -71,15 +92,48 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
-import { createPreview, VIEW_PREFIX } from "./viewer.ts";
+import { createPreview, ensureDocKey, handleViewer, httpsOrigin, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
 
-/** The bridge's viewer address (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). Read tolerantly: an SDK without the
- *  field gives undefined → null → view_origin_missing. */
-export function viewUrlOf(ctx: object): string | null {
-  const v = (ctx as { viewUrl?: unknown }).viewUrl;
-  // host[:port] only: the value goes into CSP headers (review PR #2, finding 11)
-  return typeof v === "string" && /^https:\/\/[a-z0-9.-]{1,253}(:\d{1,5})?$/.test(v) ? v : null;
+/** The viewer address of the bridge (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). The SDK's requireViewUrl answers 409
+ *  view_origin_missing while there is none; it checks only that the string is not empty, so the https host check stays here
+ *  (the value goes into CSP headers and addresses). */
+function viewBase(ctx: object): string {
+  const url = httpsOrigin(requireViewUrl(ctx as { viewUrl?: string | null }));
+  if (url === null) throw viewOriginMissing();
+  return url;
 }
+
+/** The last viewer address any call saw (null = missing, undefined = no call yet). A hold view gets only the input, no
+ *  context, so this is how the hold text can say the page cannot be shared yet (best effort; the call itself is refused
+ *  with view_origin_missing when it runs). Every handler that has a context reports it here. */
+let viewUrlSeen: string | null | undefined;
+function noteViewUrl(ctx: object): void {
+  viewUrlSeen = httpsOrigin((ctx as { viewUrl?: unknown }).viewUrl);
+}
+
+/** Banner text of the viewer shell ("Shared by <this> · written by an AI agent"). The slice carries no workspace name. */
+const VIEWER_WORKSPACE = "the owner of this workspace";
+/** The main origin of the bridge, from the slice (`bridge.publicUrl`); previews may be framed from there. */
+function mainOriginOf(publicUrl: unknown): string | null {
+  try {
+    return typeof publicUrl === "string" ? httpsOrigin(new URL(publicUrl).origin) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The viewer route (manifest `publicRoutes` `/v`, purpose `viewer`, MANIFEST M-PR-2). The SDK serves GET /v/live-artifacts/…
+ *  only, answers 503 while the instance is paused, passes the allow-listed request headers, forces VIEWER_HEADER_FLOOR and
+ *  refuses a `_d` document whose CSP is not a safe sandbox; it hands us the path WITHOUT the `/v/live-artifacts` prefix. */
+export const viewerRoute: PublicHandler = async (req, ctx) => {
+  const cfg: ViewerConfig = {
+    docKey: await ensureDocKey(ctx.secrets),
+    viewOrigin: httpsOrigin(ctx.viewUrl),
+    mainOrigin: mainOriginOf(ctx.publicUrl),
+    workspaceName: VIEWER_WORKSPACE,
+  };
+  return handleViewer(ctx.db, req, cfg, clock());
+};
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];
 export const migrationsDir = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -97,6 +151,9 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
 }
 
 const OWNER_NAME = "Owner";
+/** The calling app as the SDK VERIFIED it (Caller.product, from the signed companionCallers entry; SDK 0.1.27). Never the
+ *  display name, which is the caller's own manifest name. Only provenance: nothing here is decided by a caller's identity. */
+const appProduct = (ctx: Pick<OpContext, "caller">): string => String((ctx.caller as { product?: string }).product ?? "unknown");
 export function actorOf(ctx: Pick<OpContext, "caller">): Actor {
   const c = ctx.caller;
   if (c.type === "person") return { type: "person", id: c.id, name: OWNER_NAME };
@@ -107,6 +164,7 @@ export function actorOf(ctx: Pick<OpContext, "caller">): Actor {
 let scopeDb: Db | null = null;
 export function bindScopeDb(db: Db | null): void {
   scopeDb = db;
+  viewUrlSeen = undefined;
 }
 /** A gallery id nobody holds (ids are agent/app ids or "shared"; `#` is outside the gallery id pattern). */
 export const NO_GALLERY = "#missing";
@@ -127,6 +185,7 @@ function text(v: string, field: string): string {
 
 /** Make sure an agent's or app's own gallery exists (idempotent upsert on every call, KAN-01). */
 async function prepare(ctx: OpContext): Promise<Actor> {
+  noteViewUrl(ctx);
   const a = actorOf(ctx);
   if (a.type === "person") return a;
   const own = (await ctx.scopes.instances.list(GALLERY)).some((i) => i.id === a.id);
@@ -185,6 +244,37 @@ function review(ctx: OpContext, id: string) {
   return { sourcesPending: pending, triggerPending: String(r?.refresh_state) === "waiting_approval", ownerLink: ctx.ownerLink(`/page/${id}`) };
 }
 const sayArtifact = (i: { id: string }) => `page ${i.id}`;
+/** Receipt text for a link op: the page title, never an address or a token. */
+const titleOf = (id: string): string => String((scopeDb ? artifactRow(scopeDb, id)?.title : undefined) ?? id).slice(0, 80);
+
+/** S4 review F3 (final): a link request that is not the page as it is now gets NO early refusal for anybody. The SDK
+ *  resolves the scope (`scope()`), then decides pause, grant, scope access and the hold (`authorize`), and only then runs the
+ *  handler; a refusal inside `scope()` would come before the access check and the pause check and would tell a caller that
+ *  lost its access, or a paused agent, whether a page exists and what it looks like. So the request goes through the SDK
+ *  checks first (scope_denied, paused: the same answers as for an unknown page), and if it passes it becomes a hold that
+ *  starts with "Do not approve" and whose input is flagged, so even an approval of it is refused when it runs. */
+/** Render side of F3: remember an input whose hold was rendered on a mismatch. A write that fails is NOT swallowed: the
+ *  hold view throws, the SDK creates no hold (the call fails with an internal error), so a hold that cannot be flagged
+ *  can never be approved. */
+function flagMismatch(input: Json, diff: string[]): void {
+  if (diff.length === 0 || !scopeDb) return;
+  flagHold(scopeDb, digest(input), clock());
+}
+/** Run side of F3: an approved hold that was rendered on a mismatch never runs. */
+function refuseFlagged(db: Db, input: Json): void {
+  if (holdFlagged(db, digest(input))) throw new TbError("page_changed", "the owner was told not to approve this request (it did not match the page); ask again with the page as it is now", 409);
+}
+
+/** DESIGN §3.1, spec PORTAL-API (hold family public_link): an app that offers links refuses an AGENT (or app) link op when
+ *  the verified grant does not hold `public_link`, until the owner accepts the offer. Fail closed: no grant, or a grant
+ *  without the family in `held`, is a refusal. The SDK holds the call when the family IS in `held`; this guard is for the
+ *  grant that would otherwise run the op straight away. The owner's own calls are not held. */
+function needLinkHold(ctx: OpContext): void {
+  if (ctx.caller.type === "person") return;
+  const held = ctx.grant?.claims.held;
+  if (!Array.isArray(held) || !held.includes("public_link"))
+    throw new TbError("link_needs_hold", "A public link needs the owner's approval, and this agent's card does not hold public_link. Ask the owner to accept the public_link offer in Portal.", 403);
+}
 
 export const handlers = {
   // ───────────────────────────────────────────── agent ops
@@ -226,6 +316,8 @@ export const handlers = {
         ...(include.has("links") ? { links: linksOf(ctx.db, i.id, now) } : {}),
         ...(include.has("shape") ? { shape: shapesOf(ctx.db, i.id) } : {}),
         ...(include.has("data") ? { data: pushedDataOf(ctx.db, i.id) } : {}),
+        // what artifact_share needs as `expect` for a link that shows this version (copy it as it is)
+        shareExpect: shareExpectOf(ctx.db, i.id, n),
       };
     },
   }),
@@ -259,7 +351,7 @@ export const handlers = {
           html,
           note: i.note ?? "",
           by,
-          origin: forkedFrom ? { kind: "copy", ref: forkedFrom } : { kind: by.type === "app" ? "app" : "agent", ref: by.type === "app" ? by.name : null },
+          origin: forkedFrom ? { kind: "copy", ref: forkedFrom } : { kind: by.type === "app" ? "app" : "agent", ref: by.type === "app" ? appProduct(ctx) : null },
           forkedFrom,
         },
         clock(),
@@ -348,10 +440,70 @@ export const handlers = {
       return { results: out.results };
     },
   }),
+  [OP.artifactShare]: op<ArtifactShareInput, unknown>({
+    scope: (i) => galleryOfArtifact(i.id),
+    redact: (i) => `share page "${titleOf(i.id)}" with a link`,
+    holdView: (i) => {
+      if (!scopeDb) return `Create a public link to the live page ${i.id}.`;
+      flagMismatch(i as unknown as Json, shareMismatch(scopeDb, i.id, i.pin, i.expect));
+      return shareHoldText(scopeDb, i, clock(), { viewerMissing: viewUrlSeen === null });
+    },
+    async run(i, ctx) {
+      needLinkHold(ctx);
+      refuseFlagged(ctx.db, i as unknown as Json);
+      const base = viewBase(ctx);
+      const by = await prepare(ctx);
+      await needArtifact(ctx, i.id, "create");
+      // the owner approved this exact page (version, sha256, title): refuse if it is another page now
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, expect: i.expect, by }, clock());
+      ctx.statusChanged();
+      // the address is in this answer only (the SDK seals the idempotent answer for 24 h); the app keeps its digest
+      return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
+    },
+  }),
+  [OP.artifactPublish]: op<ArtifactPublishInput, unknown>({
+    scope: (i) => galleryOfArtifact(i.id),
+    redact: (i) => `page "${titleOf(i.id)}": version ${i.version} live${i.data?.length ? `, data ${i.data.map((d) => d.key).join(", ")}` : ""}`,
+    holdView: (i) => {
+      if (!scopeDb) return `Change what the people who hold a link to ${i.id} see.`;
+      flagMismatch(i as unknown as Json, publishMismatch(scopeDb, i));
+      return publishHoldText(scopeDb, i, clock());
+    },
+    async run(i, ctx) {
+      needLinkHold(ctx);
+      refuseFlagged(ctx.db, i as unknown as Json);
+      const by = await prepare(ctx);
+      const a = await needArtifact(ctx, i.id, "update");
+      if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
+      const data = i.data ?? [];
+      if (i.version === Number(a.live_version) && data.length === 0 && i.expect.title === undefined && i.expect.description === undefined)
+        throw new TbError("nothing_to_publish", `version ${i.version} is live already and you listed no staged data, title or description`, 409);
+      // a staged title or description moves only when listed in expect (and shown in the hold); the rest stays staged
+      const r = publishVersion(ctx.db, i.id, i.version, data, by, clock(), i.expect);
+      ctx.statusChanged();
+      return r;
+    },
+  }),
+  [OP.artifactLinkRevoke]: op<ArtifactLinkRevokeInput, unknown>({
+    // the gallery of the link's page, so the SDK checks update access to THAT gallery (unknown link = a gallery nobody holds)
+    scope: (i) => (scopeDb ? galleryOfLink(scopeDb, i.linkId, NO_GALLERY) : null),
+    redact: (i) => `revoke link ${i.linkId}`,
+    async run(i, ctx) {
+      // no needLinkHold: agents may always narrow who can see a page (DESIGN §3.1)
+      const by = await prepare(ctx);
+      const l = ctx.db.prepare("SELECT artifact_id FROM la_link WHERE id = ? AND kind = 'viewer'").get(i.linkId);
+      if (!l) throw new TbError("link_not_found", "no such link", 404);
+      await needArtifact(ctx, String(l.artifact_id), "update");
+      const r = revokeLink(ctx.db, i.linkId, by, clock());
+      ctx.statusChanged();
+      return { revoked: r.revoked };
+    },
+  }),
 
   // ───────────────────────────────────────────── owner ops
   [OP.galleryView]: op<GalleryViewInput, unknown>({
     async run(i, ctx) {
+      noteViewUrl(ctx);
       const galleries = await galleriesOf(ctx);
       const ids = i.gallery ? [i.gallery] : galleries.map((g) => g.id);
       const now = clock();
@@ -360,6 +512,7 @@ export const handlers = {
         listArtifacts(ctx.db, { galleries: ids, filter, limit: LIMITS.artifactsPerWorkspace }, now).items.length;
       const notices: { code: string; message: string }[] = [];
       if (!ctx.publicUrl) notices.push({ code: "bridge_url_missing", message: "The bridge address is not known yet. Review links appear when it is." });
+      if (httpsOrigin((ctx as { viewUrl?: unknown }).viewUrl) === null) notices.push({ code: "view_origin_missing", message: "Links and previews need the viewer address. Ask Portal to redeploy the bridge." });
       return {
         galleries,
         items: page.items,
@@ -392,8 +545,7 @@ export const handlers = {
   }),
   [OP.artifactPreviewTicket]: op<ArtifactPreviewTicketInput, unknown>({
     async run(i, ctx) {
-      const view = viewUrlOf(ctx);
-      if (!view) throw new TbError("view_origin_missing", "The bridge has no viewer address yet. Ask Portal to redeploy the bridge.", 409);
+      const view = viewBase(ctx);
       if (!artifactRow(ctx.db, i.id)) throw notFound();
       if (i.version !== undefined && !versionRow(ctx.db, i.id, i.version)) throw new TbError("version_unknown", `version ${i.version} does not exist`, 404);
       const p = createPreview(ctx.db, i.id, i.version ?? null, actorOf(ctx), clock());
@@ -473,6 +625,30 @@ export const handlers = {
     async run(i, ctx) {
       setAutoPublish(ctx.db, i.id, i.mode, actorOf(ctx), clock());
       return { id: i.id, autoPublish: i.mode };
+    },
+  }),
+  [OP.linkCreate]: op<LinkCreateInput, unknown>({
+    redact: (i) => `link for page "${titleOf(i.id)}"`,
+    async run(i, ctx) {
+      // the owner is the approver: no hold, no link_needs_hold (DESIGN §3.2)
+      noteViewUrl(ctx);
+      const base = viewBase(ctx);
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by: actorOf(ctx) }, clock());
+      ctx.statusChanged();
+      return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
+    },
+  }),
+  [OP.linkRevoke]: op<LinkRevokeInput, unknown>({
+    redact: (i) => `revoke link ${i.linkId}`,
+    async run(i, ctx) {
+      const r = revokeLink(ctx.db, i.linkId, actorOf(ctx), clock());
+      ctx.statusChanged();
+      return { revoked: r.revoked };
+    },
+  }),
+  [OP.linksList]: op<LinksListInput, unknown>({
+    async run(_i, ctx) {
+      return listLinks(ctx.db, clock());
     },
   }),
   [OP.artifactArchive]: op<ArtifactArchiveInput, unknown>({
@@ -593,6 +769,7 @@ export const definition: SdkAppDefinition = {
   manifest,
   handlers,
   migrations: migrationsDir,
+  publicRoutes: { "/v": viewerRoute },
   jobs: { [REFRESH_JOB]: { run: refreshTick as never, maxAttempts: 3, leaseMs: 120_000, timeoutMs: 5 * 60_000 } },
   // the page needs the owner when a refresh stopped after repeated failures (L3: a stop is never silent)
   // An app attention() replaces the SDK's jobs_failed/jobs_stuck default, so this one covers both: pages that stopped after
@@ -611,6 +788,7 @@ export const definition: SdkAppDefinition = {
   },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
+    await ensureDocKey(ctx.secrets); // the document-ticket key: created once, kept sealed in the SDK's secret store
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
   },
   events: {

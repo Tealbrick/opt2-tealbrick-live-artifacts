@@ -11,9 +11,9 @@ import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
-import { opaqueDigest } from "@opt2-tealbrick/manifest";
+import { opaqueDigest, VIEWER_REQUEST_HEADERS } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
-import { handleViewer, newToken, type ViewerConfig } from "../../src/viewer.ts";
+import { handleViewer, newToken, VIEW_PREFIX, type ViewerConfig } from "../../src/viewer.ts";
 import { migratedDb } from "../helpers.ts";
 
 const PW = process.env.PW_CORE ?? "/Users/puma/work/active/website-martin-redesign/node_modules/playwright-core/index.mjs";
@@ -112,7 +112,11 @@ describe("no-egress canary (real Chrome)", { skip: available ? false : `skipped:
     ).run(opaqueDigest(previewToken), now, now + 600_000);
     let cfg: ViewerConfig = { viewOrigin: null, mainOrigin: null, workspaceName: "Acme", docKey: "canary-doc-key" };
     views = await listen(async (req, res) => {
-      const r = handleViewer(db, new Request(`${cfg.viewOrigin}${req.url}`, { method: req.method ?? "GET", headers: req.headers as Record<string, string> }), cfg, Date.now());
+      // what the SDK does for the viewer route: the handler sees the path WITHOUT /v/live-artifacts and only allow-listed headers
+      const rest = (req.url ?? "/").slice(VIEW_PREFIX.length) || "/";
+      const headers: Record<string, string> = {};
+      for (const name of VIEWER_REQUEST_HEADERS) if (typeof req.headers[name] === "string") headers[name] = req.headers[name] as string;
+      const r = handleViewer(db, new Request(`http://live-artifacts.views.internal${rest}`, { method: req.method ?? "GET", headers }), cfg, Date.now());
       res.writeHead(r.status, Object.fromEntries(r.headers));
       res.end(Buffer.from(await r.arrayBuffer()));
     });

@@ -22,6 +22,10 @@ export const LIMITS = {
   /** active viewer links per artifact and per workspace (S4) */
   linksPerArtifact: 5,
   linksPerWorkspace: 50,
+  /** the Links page lists at most this many links (newest first) */
+  linksListMax: 200,
+  /** links that ended (revoked or expired) are deleted this many days later, with their view counts */
+  endedLinkKeepDays: 90,
   /** refresh interval bounds, seconds */
   refreshMinS: 300,
   refreshMaxS: 86_400,
