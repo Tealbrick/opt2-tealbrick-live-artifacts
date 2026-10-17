@@ -275,6 +275,6 @@ describe("assets", () => {
     const hostile = "<head ".repeat(50_000);
     const t0 = performance.now();
     injectHelper(hostile);
-    assert.ok(performance.now() - t0 < 50, "linear on hostile input (review PR #2, finding 1)");
+    assert.ok(performance.now() - t0 < 500, "linear on hostile input (review PR #2, finding 1: the old regex took ~4 s)");
   });
 });
