@@ -10,7 +10,7 @@ import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { lintHtml } from "../src/lint.ts";
-import { clearSanitizeCache, sanitizeHtml } from "../src/sanitize.ts";
+import { BLOCKED_DOCUMENT, clearSanitizeCache, sanitizeHtml, servedDocument } from "../src/sanitize.ts";
 import { handleViewer, newToken, resolveToken, VIEW_PREFIX, type ViewerConfig, viewData } from "../src/viewer.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -96,6 +96,52 @@ describe("sanitizer and viewer document path on a 1 MiB page (target: under 50 m
     const dataMs = median(() => void handleViewer(db, req(`/${token}/data`, "empty"), CFG, now), 15);
     report("viewer /data", dataMs, 10);
     assert.ok(VIEW_PREFIX.length > 0);
+  });
+});
+
+describe("bomb shapes (S6 review): the serve path stays under 100 ms", () => {
+  const BOMBS: [string, string][] = [
+    ["a tag with 36,000 attributes (180 KB)", `<a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`],
+    ["an svg with 38,000 attributes", `<svg ${Array.from({ length: 38_000 }, (_, i) => `d${i}="1"`).join(" ")}></svg>`],
+    ["60,000 nested divs", "<div>".repeat(60_000)],
+    ["250,000 tags", "<b>".repeat(250_000)],
+    ["10,000 attributes each behind a quoted >", `<p ${Array.from({ length: 10_000 }, (_, i) => `a${i}=">"`).join(" ")}>x</p>`],
+  ];
+  it("sanitizing a bomb fails closed in under 100 ms (a restored row without a stored result)", () => {
+    for (const [what, html] of BOMBS) {
+      clearSanitizeCache();
+      const t = performance.now();
+      const out = servedDocument(html);
+      const ms = performance.now() - t;
+      console.log(`perf: bomb ${what}: ${ms.toFixed(1)} ms`);
+      assert.ok(ms < 100 * SCALE, `${what}: ${ms.toFixed(0)} ms`);
+      assert.equal(out, BLOCKED_DOCUMENT, what);
+    }
+  });
+  it("the viewer path for a bomb row without a stored result, and for a stored page, is fast", async () => {
+    const db = migratedDb();
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO la_artifact (id, gallery_id, title, description, status, live_version, auto_publish, refresh_state, created_by_type, created_by_id, created_by_name, created_at, updated_at)
+       VALUES ('art_01J00000000000000000000BOM', 'shared', 'Bomb', '', 'active', 1, 'owner', 'off', 'agent', 'agt_x', 'Mallory', ?, ?)`,
+    ).run(now, now);
+    db.prepare(
+      "INSERT INTO la_version (artifact_id, n, html, html_sha256, contract_json, contract_sha256, bytes, created_by_type, created_by_id, created_by_name, created_at) VALUES ('art_01J00000000000000000000BOM', 1, ?, 'x', '{}', 'x', 1, 'agent', 'agt_x', 'Mallory', ?)",
+    ).run(Buffer.from(BOMBS[0]?.[1] ?? "", "utf8"), now);
+    const token = newToken();
+    db.prepare(
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES ('lnk_01J00000000000000000000BAM', 'art_01J00000000000000000000BOM', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
+    ).run(opaqueDigest(token), now, now + 86_400_000);
+    const req = (path: string, dest: string) => new Request(`http://live-artifacts.views.internal${path}`, { headers: { "sec-fetch-dest": dest } });
+    const data = (await handleViewer(db, req(`/${token}/data`, "empty"), CFG, now).json()) as { doc: string };
+    clearSanitizeCache();
+    const t = performance.now();
+    const r = handleViewer(db, req(`/${data.doc}`, "iframe"), CFG, now);
+    const ms = performance.now() - t;
+    console.log(`perf: viewer path, bomb row without a stored result: ${ms.toFixed(1)} ms`);
+    assert.equal(r.status, 200);
+    assert.ok(ms < 100 * SCALE, `${ms.toFixed(0)} ms`);
+    assert.match(await r.text(), /This page cannot be shown/);
   });
 });
 

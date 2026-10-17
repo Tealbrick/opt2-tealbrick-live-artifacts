@@ -152,11 +152,46 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
   });
 });
 
+describe("sanitized once at write time, stored per version (S6 review)", () => {
+  const stored = (id: string, n = 1): string | null => {
+    const r = db.prepare("SELECT served_html FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n);
+    return r?.served_html === null || r?.served_html === undefined ? null : Buffer.from(r.served_html as Uint8Array).toString("utf8");
+  };
+  it("artifact_create and artifact_update store the sanitized page; the viewer serves exactly that", async () => {
+    const id = await page();
+    assert.ok(stored(id)?.includes("<body>v1</body>"), String(stored(id)));
+    await run("artifact_update", { id, view: { html: '<!doctype html><html><body><p>v2</p><a href="https://x.test/a">l</a><!-- c --></body></html>' } }, A());
+    const v2 = stored(id, 2) ?? "";
+    assert.ok(v2.includes("<p>v2</p>") && !v2.includes("x.test") && !v2.includes("<!--"), v2);
+    const tok = link(id);
+    db.prepare("UPDATE la_artifact SET live_version = 2 WHERE id = ?").run(id);
+    const html = await get(await docPath(tok)).text();
+    assert.ok(html.includes("<p>v2</p>") && !html.includes("x.test"));
+    // proof that the stored text is what is served (not a fresh sanitize): a marker only the column has
+    db.prepare("UPDATE la_version SET served_html = ? WHERE artifact_id = ? AND n = 2").run(Buffer.from("<!DOCTYPE html><html><head></head><body>FROM-THE-COLUMN</body></html>"), id);
+    assert.ok((await get(await docPath(tok)).text()).includes("FROM-THE-COLUMN"));
+  });
+  it("a row without the stored result (older row, restore) is sanitized at serve time", async () => {
+    const id = await page();
+    db.prepare("UPDATE la_version SET html = ?, served_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from('<p>x</p><link rel="prerender" href="https://x.test/p">'), id);
+    const html = await get(await docPath(link(id))).text();
+    assert.ok(html.includes("<p>x</p>") && !html.includes("x.test"));
+  });
+  it("a page that cannot be sanitized is refused at write time with a clear error, and nothing is stored", async () => {
+    const id = await page();
+    for (const html of ["<div>".repeat(5000), `<a ${Array.from({ length: 1000 }, (_, i) => `a${i}`).join(" ")}>x</a>`]) {
+      await assert.rejects(run("artifact_update", { id, view: { html } }, A()), (e: { code?: string; httpStatus?: number }) => e.code === "view_not_servable" && e.httpStatus === 422);
+    }
+    assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_version WHERE artifact_id = ?").get(id)?.c), 1);
+    await assert.rejects(run("artifact_create", { title: "Deep", view: { html: "<div>".repeat(5000) } }, A()), (e: { code?: string }) => e.code === "view_not_servable");
+  });
+});
+
 describe("every served agent document is sanitized (C238)", () => {
   const HOSTILE =
     '<!doctype html><html><head><link rel="prerender" href="https://canary.test/p"><base href="https://canary.test/"><meta http-equiv="refresh" content="0;url=https://canary.test/m"></head>' +
     '<body><h1 id="m">marker</h1><img src="//canary.test/i.png"><script type="speculationrules">{"prerender":[{"source":"list","urls":["https://canary.test/s"]}]}</script><script>window.ran=1</script></body></html>';
-  const set = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+  const set = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ?, served_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
   it("a viewer link and an owner preview both get the page without outside markup, with the marker and the scripts", async () => {
     const id = await page();
     set(id, HOSTILE);

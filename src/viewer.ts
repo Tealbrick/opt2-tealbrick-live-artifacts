@@ -14,7 +14,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { servedDocument } from "./sanitize.ts";
+import { servedDocumentOf } from "./sanitize.ts";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
@@ -279,7 +279,7 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     const v = versionRow(db, link.artifactId, t.n);
     if (!v) return notFound();
     // every agent document is sanitized on the way out (C238): owner preview and public link share this one call
-    const html = injectHelper(servedDocument(Buffer.from(v.html as Uint8Array).toString("utf8")));
+    const html = injectHelper(servedDocumentOf(v));
     return respond(200, html, "text/html; charset=utf-8", documentCsp(cfg, link.kind === "preview"));
   }
   const link = resolveToken(db, rest[0] ?? "", now);

@@ -634,6 +634,13 @@ export function clearSanitizeCache(): void {
   cacheBytes = 0;
 }
 
+/** The sanitized document of a stored version: the result stored when it was written, else (an older row, a restore) sanitized
+ *  now. Fails closed to the fixed document. */
+export function servedDocumentOf(row: Record<string, unknown>): string {
+  if (row.served_html !== null && row.served_html !== undefined) return Buffer.from(row.served_html as Uint8Array).toString("utf8");
+  return servedDocument(Buffer.from(row.html as Uint8Array).toString("utf8"));
+}
+
 /** THE call site for a served document: sanitized HTML, or the fixed "cannot show this page" document when anything fails. */
 export function servedDocument(html: string): string {
   try {
