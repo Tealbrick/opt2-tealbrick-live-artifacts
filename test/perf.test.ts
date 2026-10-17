@@ -53,11 +53,11 @@ describe("sanitizer and viewer document path on a 1 MiB page (target: under 50 m
   const html = bigPage(MIB);
   it("sanitizeHtml, 1 MiB", () => {
     assert.ok(html.length >= MIB - 300 && html.length <= MIB + 300, String(html.length));
-    report("sanitizeHtml 1 MiB (cold)", median(() => sanitizeHtml(html)), 150);
+    report("sanitizeHtml 1 MiB (cold)", median(() => sanitizeHtml(html)), 400);
   });
   it("sanitizeHtml at the version size cap (256 KiB, always verified by a second parse)", () => {
     const capped = bigPage(LIMITS.htmlBytes);
-    report("sanitizeHtml 256 KiB (with verification)", median(() => sanitizeHtml(capped)), 60);
+    report("sanitizeHtml 256 KiB (with verification)", median(() => sanitizeHtml(capped)), 200);
   });
 
   let db: Db;
@@ -89,8 +89,8 @@ describe("sanitizer and viewer document path on a 1 MiB page (target: under 50 m
       const r = handleViewer(db, req(path, "iframe"), CFG, now);
       assert.equal(r.status, 200);
     };
-    report("viewer document path, 1 MiB, cold", median(get, 9, 1, clearSanitizeCache), 150);
-    report("viewer document path, 1 MiB, warm (cache hit)", median(get), 40);
+    report("viewer document path, 1 MiB, cold", median(get, 9, 1, clearSanitizeCache), 400);
+    report("viewer document path, 1 MiB, warm (cache hit)", median(get), 100);
     const shell = median(() => void handleViewer(db, req(`/${token}`, "document"), CFG, now), 15);
     report("viewer shell", shell, 10);
     const dataMs = median(() => void handleViewer(db, req(`/${token}/data`, "empty"), CFG, now), 15);

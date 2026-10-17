@@ -535,7 +535,9 @@ export function precheck(src: string): void {
   const n = src.length;
   let tags = 0;
   let i = 0;
-  while ((i = src.indexOf("<", i)) >= 0) {
+  for (;;) {
+    i = src.indexOf("<", i);
+    if (i < 0) break;
     i++;
     let c = src.charCodeAt(i);
     const end = c === 47;
