@@ -1,0 +1,45 @@
+/* Page layout helpers of the approved mini app mockups (coordination/design/mockups/app-shell.ts) that the kit
+   (@opt2-tealbrick/ui components.css) does not have: .app-page, .page-head, .ruled, .item, .toolbar, .split, .kv, .mono
+   and the phone rules. Tokens only (check-system src). ONE source: the miniapp template. Apps copy this file
+   unchanged to src/ui/pages.css; app-specific layout goes in src/ui/app.css (build-ui links both after the kit CSS). */
+
+.app-page { display: grid; gap: var(--tb-s6); align-content: start; }
+.page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--tb-s3) var(--tb-s5); }
+.page-head h1 { font-size: 2rem; line-height: 36px; }
+.page-head .tb-lede { max-width: 60ch; }
+
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--tb-s6); align-items: start; }
+.split > aside { position: sticky; top: calc(var(--tb-head-app) + 16px); }
+
+/* ruled list: ink rule on top, hairline under each row */
+.ruled { display: grid; box-shadow: var(--tb-rule-top); }
+.ruled > * { box-shadow: var(--tb-hair-bottom); }
+.item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 14px; align-items: start; padding: 16px 0; }
+.item h3 { font-size: 1.0625rem; font-weight: var(--tb-weight-label); line-height: 22px; }
+.item p { grid-column: 2; color: var(--tb-ink-soft); font-size: var(--tb-text-label); line-height: 22px; overflow-wrap: anywhere; }
+.item .meta { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--tb-muted); font-size: var(--tb-text-tag); font-weight: var(--tb-weight-nav); line-height: 20px; }
+.item > .side { grid-column: 3; grid-row: 1 / span 3; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.item .tb-swatch.is-needs-you { --tone: var(--tb-brick); }
+/* the call's own view of a hold (what exactly would run) */
+.item .view { grid-column: 2; margin: 4px 0 0; padding: 10px 12px; max-height: 240px; overflow: auto; border-radius: var(--tb-radius-brick); background: var(--tb-plate); color: var(--tb-ink); font-family: var(--tb-font-mono); font-size: var(--tb-text-tag); line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--tb-s3); }
+.toolbar .tb-search { flex: 1; min-width: 220px; max-width: 420px; }
+
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; font-size: var(--tb-text-label); }
+.kv dt { color: var(--tb-muted); font-weight: var(--tb-weight-nav); }
+.mono { font-family: var(--tb-font-mono); font-size: var(--tb-text-tag); }
+.scroll-x { overflow-x: auto; }
+.tb-table td.num { white-space: nowrap; }
+
+@media (max-width: 960px) { .split { grid-template-columns: 1fr; } .split > aside { position: static; } }
+
+/* phone: nothing may widen the page; wide tables scroll inside themselves */
+.app-page, .app-page > *, .split > * { min-width: 0; }
+.app-page .tb-table, .scroll-x { position: relative; }
+@media (max-width: 720px) {
+  .app-page .tb-table { display: block; overflow-x: auto; max-width: 100%; }
+  .hide-phone { display: none !important; }
+  .item { grid-template-columns: auto minmax(0, 1fr); }
+  .item > .side { grid-column: 2; grid-row: auto; justify-content: flex-start; }
+}

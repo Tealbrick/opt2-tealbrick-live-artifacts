@@ -1,0 +1,114 @@
+{
+  "$schema": "https://spec.opt2.tealbrick.com/manifest.schema.json",
+  "schema": "tealbrick.miniapp/2",
+  "id": "live-artifacts",
+  "name": "Live Artifacts",
+  "summary": "Live Artifacts keeps short items in collections that your agents can list and add to.",
+  "version": "0.1.0",
+  "sdkMajor": 1,
+  "publisher": { "name": "Live Artifacts authors" },
+  "source": { "repo": "https://github.com/Tealbrick/opt2-tealbrick-live-artifacts", "license": "Apache-2.0" },
+  "icon": { "svgPath": "M4 5h16v14H4z M8 9h8 M8 13h8 M8 17h5", "viewBox": "0 0 24 24" },
+  "discovery": {
+    "category": "productivity",
+    "intents": ["keep a list of items", "add an item to my collection", "list my items"],
+    "keywords": ["items", "list", "collection"]
+  },
+  "runtime": {
+    "build": { "context": ".", "dockerfile": "Dockerfile" },
+    "port": 8080,
+    "healthPath": "/tb/v1/health",
+    "resources": { "cpu": 0.25, "memoryMb": 256 },
+    "volumes": [
+      { "id": "data", "mountPath": "/data", "sizeGb": 1, "purpose": "data" },
+      { "id": "backup", "mountPath": "/backup", "sizeGb": 2, "purpose": "backup" }
+    ]
+  },
+  "operations": [
+    {
+      "id": "items_list",
+      "title": "List items",
+      "description": "List the newest items in one collection, or in every collection the caller may read.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "collection", "title", "createdAt"],
+              "properties": {
+                "id": { "type": "string" },
+                "collection": { "type": "string" },
+                "title": { "type": "string" },
+                "createdAt": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "crud": ["read"],
+      "effect": "read",
+      "scopeType": "collection",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "item_create",
+      "title": "Create item",
+      "description": "Add an item to a collection the caller may write to (default: the caller's own collection).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "collection"],
+        "properties": {
+          "id": { "type": "string" },
+          "collection": { "type": "string" }
+        }
+      },
+      "crud": ["create"],
+      "effect": "write",
+      "scopeType": "collection",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "agent"
+    }
+  ],
+  "scopes": [
+    {
+      "type": "collection",
+      "label": "Collection",
+      "labelPlural": "Collections",
+      "access": [
+        { "id": "read", "label": "Read", "crud": ["read"] },
+        { "id": "read_write", "label": "Read and add", "crud": ["read", "create"] }
+      ],
+      "defaultGrants": [{ "kind": "own", "access": "read_write" }],
+      "summaryTemplate": "{count} {labelPlural} ({access.read_write} writable)"
+    }
+  ],
+  "skills": [{ "id": "use-live-artifacts", "title": "How to use Live Artifacts", "file": "skills/use-live-artifacts/SKILL.md" }],
+  "backups": { "schedule": "30 2 * * *", "retain": 7 },
+  "ui": { "launchPath": "/", "configurePath": "/configure" }
+}

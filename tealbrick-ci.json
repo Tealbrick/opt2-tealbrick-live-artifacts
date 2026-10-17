@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Tealbrick/opt2-tealbrick-platform/ci-v9.10/ci/tealbrick-ci.schema.json",
+  "kind": "miniapp",
+  "paths": ["."],
+  "images": [
+    { "name": "opt2-tealbrick-live-artifacts", "product": "live-artifacts", "kind": "app", "manifest": "tealbrick.manifest.json" }
+  ]
+}
