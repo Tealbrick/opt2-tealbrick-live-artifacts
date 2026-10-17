@@ -1,14 +1,12 @@
 // Settings: how long new links last, the viewer address and the refresh rules (mockup cards, C185).
 import { Field, Select, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
-import { explain, run } from "./api.ts";
+import { explain, lifetimeOptions, run } from "./api.ts";
 import { Failure, LoadFailed, PageHead, useAct } from "./common.tsx";
-
-const DAYS = [1, 7, 30, 90];
-const label = (d: number) => (d === 1 ? "1 day" : d === 90 ? "90 days (longest)" : `${d} days`);
 
 export function SettingsPage() {
   const [days, setDays] = useState<number | null>(null);
+  const [viewer, setViewer] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
@@ -18,7 +16,9 @@ export function SettingsPage() {
     setLoading(true);
     try {
       // the setting comes with the gallery answer; "archived" is the filter that carries the fewest pages
-      setDays((await run("gallery_view", { filter: "archived" })).settings.defaultLinkDays);
+      const out = await run("gallery_view", { filter: "archived" });
+      setDays(out.settings.defaultLinkDays);
+      setViewer(!out.notices.some((n) => n.code === "view_origin_missing"));
       setLoadError(null);
     } catch (e) {
       setLoadError(explain(e));
@@ -38,7 +38,7 @@ export function SettingsPage() {
       setSaved(true);
     });
 
-  const options = (days !== null && !DAYS.includes(days) ? [...DAYS, days].sort((a, b) => a - b) : DAYS).map((d) => ({ value: String(d), label: label(d) }));
+  const options = lifetimeOptions(days);
   return (
     <section className="app-page" aria-label="Settings">
       <PageHead title="Settings" />
@@ -59,8 +59,10 @@ export function SettingsPage() {
         <article className="tb-card">
           <h3>Viewer address</h3>
           <div className="tb-row">
-            <Tag status="idle">Not set yet</Tag>
-            <span className="tb-hint">Links open on a separate address of your bridge, never on the address of your apps. Previews and links need it. Ask Portal to redeploy the bridge.</span>
+            {viewer === null ? <Tag status="idle">Checking</Tag> : viewer ? <Tag status="live">Ready</Tag> : <Tag status="idle">Not set yet</Tag>}
+            <span className="tb-hint">
+              Links open on a separate address of your bridge, never on the address of your apps. {viewer === false ? "Previews and links need it. Ask Portal to redeploy the bridge." : "Previews and links use it."}
+            </span>
           </div>
         </article>
         <article className="tb-card">

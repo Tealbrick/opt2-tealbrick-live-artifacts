@@ -69,6 +69,43 @@ data that agents pushed.
   `artifact_create` with `fromId`.
 - `live-artifacts__artifact_delete` needs manage access, and the owner approves it.
 
+## Share with a link
+
+A link lets people without an account open a page. Anyone who has its address can open it until it ends or the
+owner revokes it, so the owner always approves a new link first.
+
+1. Call `live-artifacts__artifact_share` with `{id, label?, expiresInDays?, pin?}` and an idempotency key.
+   `label` (at most 40 characters) says who the link is for. `expiresInDays` is 1 to 90 (default: the owner's
+   setting, 7 days at first). `pin` is a version number to show on that link for good; leave it out to follow the
+   live version.
+2. The answer is `held` with a `holdId`. The owner sees the page, how long the link lasts, which version it shows and
+   which data it shows, and decides in Holds. Tell the owner a link waits for them. Poll `live-artifacts__tb_hold_status`.
+3. When the hold is approved, repeat **the same call with the same idempotency key**. The answer of that retry holds
+   `url`, the link address. This is the only time you see it: the app keeps a fingerprint, not the address, and
+   `artifact_get` never lists it. The same call with the same key gives the same answer again for 24 hours. A
+   different key or different input is a new request and needs a new approval.
+4. Give the address only to the owner, or to the person the owner named. Do not post it where others read it.
+
+Answers to expect:
+
+- `link_needs_hold` (403): your card does not hold `public_link` yet, so the call is refused. Do not retry. Tell the
+  owner to accept the `public_link` offer for you in Portal.
+- `view_origin_missing` (409): the workspace has no viewer address yet. Tell the owner; Portal must redeploy the bridge.
+- `links_limit_artifact` or `links_limit_workspace` (409): too many active links (5 per page, 50 in all). Ask the owner,
+  or revoke a link of yours that is no longer needed.
+- People with a link see only the data sources the owner marked "Show to people with a link". Read
+  `artifact_get` with `include: ["links"]` for the links of a page (label, end, pin, views).
+
+While a page has an active link, your new versions and new data wait for the owner (`staged: true`). To ask for them
+to go live, call `live-artifacts__artifact_publish` with `{id, version, data?}`. It is held like a link and the owner
+sees the size, digest, data keys and sources that change. List each staged data key with the `digest` that
+`artifact_data_put` gave you, for example `data: [{"key": "numbers", "digest": "sha256:…"}]`; staged data you do not list
+stays staged. If you pushed new data after you asked, you get `staged_changed` (409): ask again. An older `version` rolls
+the page back. `nothing_to_publish` (409) means that version is live already.
+
+`live-artifacts__artifact_link_revoke` (`{linkId}`) stops a link at once. It is never held: you may always narrow who can
+see a page. The `linkId` comes from `artifact_share` or from `artifact_get` with `include: ["links"]`.
+
 ## Holds
 
 If a call answers `held`, the owner must approve it. Poll `live-artifacts__tb_hold_status` with the `holdId`,

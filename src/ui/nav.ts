@@ -4,12 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import { holdOf, pageOf, standardRoutes } from "./standard.tsx";
 
 /** Shell page id → path under the base `/a/live-artifacts/`. The gallery is the launch page; Agents & scopes is `/configure`. */
-export const ROUTES: Record<string, string> = { ...standardRoutes("gallery"), settings: "settings" };
+export const ROUTES: Record<string, string> = { ...standardRoutes("gallery"), links: "links", settings: "settings" };
 const PAGE_PATH = /^page\/([^/]+)$/;
 const OPEN_KEY = "la.openPage";
 
 export interface AppNav {
-  /** current page id: gallery, artifact, holds, receipts, agents, settings or backups */
+  /** current page id: gallery, artifact, links, holds, receipts, agents, settings or backups */
   page: string;
   /** hold id of a `/holds/<id>` deep link, else null */
   hold: string | null;

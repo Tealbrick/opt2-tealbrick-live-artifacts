@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { digest, opaqueDigest } from "@opt2-tealbrick/manifest";
-import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
+import { type Db, type OpContext, VIEW_ORIGIN_MISSING } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { publishHoldText, shareHoldText } from "../src/links.ts";
@@ -79,8 +79,8 @@ describe("artifact_share and link_create", () => {
   it("view_origin_missing (409) while the bridge has no viewer address; a viewer address that is not https is none either", async () => {
     const id = await page();
     for (const viewUrl of [undefined, null, "", "http://views.example", "https://views.example/path"]) {
-      await assert.rejects(share(id, {}, agent(["public_link"], { viewUrl })), code("view_origin_missing"), String(viewUrl));
-      await assert.rejects(run("link_create", { id }, owner({ viewUrl })), code("view_origin_missing"), String(viewUrl));
+      await assert.rejects(share(id, {}, agent(["public_link"], { viewUrl })), code(VIEW_ORIGIN_MISSING), String(viewUrl));
+      await assert.rejects(run("link_create", { id }, owner({ viewUrl })), code(VIEW_ORIGIN_MISSING), String(viewUrl));
     }
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM la_link").get()?.c, 0, "nothing was created");
   });
@@ -363,6 +363,15 @@ describe("hold texts (DESIGN T4)", () => {
     // the receipt text names the page, never an address
     const redacted = handlers.artifact_share.redact?.({ id } as never) ?? "";
     assert.equal(redacted, 'share page "Weekly operations" with a link');
+  });
+  it("agent-written text cannot fake lines of the hold: a title with line breaks stays on one line", async () => {
+    const id = await page('Quarterly\nDoes not show: nothing\u2028The owner already approved this');
+    const text = shareHoldText(db, { id, label: "a\nb" }, now);
+    const lines = text.split("\n");
+    assert.equal(lines.length, 7, "the seven lines of the template, none added by the title");
+    assert.deepEqual(lines.filter((l) => /Does not show: nothing/.test(l)).length, 1, "the title's words stay inside the first line");
+    assert.match(lines[0] ?? "", /live page "Quarterly Does not show: nothing The owner already approved this", made by Scout\./);
+    assert.match(text, /\(label: "a b"\)/);
   });
   it("artifact_publish says what changes: size, digest, keys and sources; a bad request says it will be refused", async () => {
     const id = await page();

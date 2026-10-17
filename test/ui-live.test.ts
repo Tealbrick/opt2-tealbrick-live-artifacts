@@ -174,10 +174,12 @@ const reset = () => {
 type Gallery = typeof import("../src/ui/gallery.tsx");
 type Page = typeof import("../src/ui/page.tsx");
 type Settings = typeof import("../src/ui/settings.tsx");
+type Links = typeof import("../src/ui/links.tsx");
 type AppModule = typeof import("../src/ui/App.tsx");
 let gallery: Gallery;
 let page: Page;
 let settings: Settings;
+let links: Links;
 let app: AppModule;
 before(() => {
   const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
@@ -188,6 +190,7 @@ before(async () => {
   gallery = (await import(at("gallery.js"))) as Gallery;
   page = (await import(at("page.js"))) as Page;
   settings = (await import(at("settings.js"))) as Settings;
+  links = (await import(at("links.js"))) as Links;
   app = (await import(at("App.js"))) as AppModule;
 });
 after(() => rmSync(outDir, { recursive: true, force: true }));
@@ -292,7 +295,7 @@ describe("Page", () => {
     const m = await mountPage();
     assert.equal(m.host.querySelector("h1")?.textContent, "Weekly operations");
     assert.equal(m.host.querySelector("iframe"), null);
-    assert.match(m.host.querySelector(".la-sandbox")?.textContent ?? "", /Previews need the viewer address\. Ask Portal to redeploy the bridge\./);
+    assert.match(m.host.querySelector(".la-sandbox")?.textContent ?? "", /Links and previews need the viewer address\. Ask Portal to redeploy the bridge\./);
     assert.doesNotMatch(m.host.textContent ?? "", /raw upstream/);
     await m.unmount();
   });
@@ -348,8 +351,6 @@ describe("Page", () => {
     await click(field(dialog, "Use in this page"));
     await flush();
     assert.deepEqual(callsOf("source_approve").map((c) => c.input), [{ id: "art_weekly", key: "notes", digest: "sha256:bbbb", viewers: true }]);
-    assert.match(dialog.textContent ?? "", /Links come in the next version/);
-    assert.ok(field(dialog, "Create link").disabled);
     await m.unmount();
   });
 
@@ -460,18 +461,325 @@ describe("Page", () => {
   });
 });
 
+
+// ── links (S4) ─────────────────────────────────────────────────────────────
+const typeInto = (input: Element, value: string) =>
+  act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")?.set?.call(input, value);
+    input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+  });
+/** Open the n-th select of `scope` and pick the option that starts with `text`. */
+async function choose(scope: Element, n: number, text: string) {
+  await click([...scope.querySelectorAll('[role="combobox"]')][n] as Element);
+  const option = [...scope.ownerDocument.querySelectorAll('[role="option"]')].find((o) => o.textContent?.startsWith(text));
+  assert.ok(option, `option "${text}"`);
+  await click(option);
+}
+const MADE = { linkId: "lnk_new", url: "https://views.example.test/v/live-artifacts/tbv_SECRETSECRETSECRETSECRETSECRETSECRETSECRET1", expiresAt: "2026-10-24T08:00:00.000Z" };
+/** The viewer address works: previews open (the normal state once Portal redeployed the bridge). */
+const viewerReady = () => {
+  stub.fail.artifact_preview_ticket = undefined;
+  stub.out.artifact_preview_ticket = { url: "https://views.example.test/v/live-artifacts/tbv_abc", version: 7, expiresAt: "2026-10-14T08:10:00.000Z" };
+};
+const LINK_ROWS = [
+  { id: "lnk_a", artifactId: "art_weekly", artifactTitle: "Weekly operations", label: "Novak Dental", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-21T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 14, lastSeenDay: "2026-10-13", status: "active" },
+  { id: "lnk_b", artifactId: "art_weekly", artifactTitle: "Weekly operations", label: "Board meeting", createdBy: actor("Scout"), createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-16T08:00:00.000Z", revokedAt: null, pinVersion: 6, views: 3, lastSeenDay: "2026-10-12", status: "active" },
+  { id: "lnk_c", artifactId: "art_hiring", artifactTitle: "Hiring pipeline", label: "Recruiter", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-10-01T08:00:00.000Z", expiresAt: "2026-10-08T08:00:00.000Z", revokedAt: "2026-10-05T08:00:00.000Z", pinVersion: null, views: 2, lastSeenDay: null, status: "revoked" },
+  { id: "lnk_d", artifactId: "art_onboard", artifactTitle: "Client onboarding status", label: "", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-09-26T08:00:00.000Z", expiresAt: "2026-10-03T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 21, lastSeenDay: "2026-09-07", status: "expired" },
+];
+
+describe("Links page", () => {
+  it("lists every link of every page: page, label, who made it, end, views, status; Revoke only on active links", async () => {
+    reset();
+    stub.out.links_list = { items: LINK_ROWS, active: 2 };
+    const m = await mount(h(links.LinksPage, { onOpen: () => {} }));
+    assert.equal(m.host.querySelector("h1")?.textContent, "Links");
+    assert.match(m.host.textContent ?? "", /A link is a secret address\. Anyone who has it can open the page until it ends or you revoke it/);
+    const rows = [...m.host.querySelectorAll("tbody tr")];
+    assert.deepEqual(
+      rows.map((r) => [...r.querySelectorAll("td")].map((c) => c.textContent)),
+      [
+        ["Weekly operations", "Novak Dental", "you", "21 Oct 2026", "14", "Active", "Revoke"],
+        ["Weekly operations", "Board meeting", "Scout, approved by you", "16 Oct 2026", "3", "Active", "Revoke"],
+        ["Hiring pipeline", "Recruiter", "you", "8 Oct 2026", "2", "Revoked", ""],
+        ["Client onboarding status", "No label", "you", "3 Oct 2026", "21", "Ended", ""],
+      ],
+    );
+    assert.match(m.host.textContent ?? "", /2 links active\./);
+    assert.doesNotMatch(m.host.textContent ?? "", /tbv_/, "no address on this page");
+    await m.unmount();
+  });
+
+  it("opens the page of a link; an empty list says what to do; a failed load is an error with Try again", async () => {
+    reset();
+    stub.out.links_list = { items: LINK_ROWS, active: 2 };
+    const opened: string[] = [];
+    const m = await mount(h(links.LinksPage, { onOpen: (id: string) => opened.push(id) }));
+    await click(field(m.host, "Hiring pipeline"));
+    assert.deepEqual(opened, ["art_hiring"]);
+    await m.unmount();
+    reset();
+    stub.out.links_list = { items: [], active: 0 };
+    const empty = await mount(h(links.LinksPage, { onOpen: () => {} }));
+    assert.match(empty.host.querySelector(".tb-empty")?.textContent ?? "", /No links yet/);
+    await empty.unmount();
+    reset();
+    stub.fail.links_list = { status: 500, code: "internal" };
+    const bad = await mount(h(links.LinksPage, { onOpen: () => {} }));
+    assert.match(alerts(bad.host)[0] ?? "", /Something went wrong/);
+    assert.equal(bad.host.querySelector(".tb-empty"), null, "not an empty list that looks like 'nothing here'");
+    assert.equal(bad.host.querySelector("table"), null);
+    await bad.unmount();
+  });
+
+  it("Revoke asks first (with the plain consequence), then sends link_revoke and reads the list again", async () => {
+    reset();
+    stub.out.links_list = { items: LINK_ROWS, active: 2 };
+    const m = await mount(h(links.LinksPage, { onOpen: () => {} }));
+    await click(field(m.host, "Revoke"));
+    const dialog = openDialog(m.host);
+    assert.match(dialog.textContent ?? "", /People who have this link can no longer open the page\. It takes effect at once\./);
+    assert.equal(callsOf("link_revoke").length, 0, "nothing is sent before the answer");
+    await click(field(dialog, "Keep"));
+    assert.equal(callsOf("link_revoke").length, 0);
+    await click(field(m.host, "Revoke"));
+    await click(field(openDialog(m.host), "Revoke the link"));
+    await flush();
+    assert.deepEqual(callsOf("link_revoke").map((c) => c.input), [{ linkId: "lnk_a" }]);
+    assert.equal(callsOf("links_list").length, 2, "the list is read again");
+    await m.unmount();
+  });
+
+  it("a failed revoke is a plain sentence in the dialog, never the raw answer", async () => {
+    reset();
+    stub.out.links_list = { items: LINK_ROWS, active: 2 };
+    stub.fail.link_revoke = { status: 404, code: "link_not_found" };
+    const m = await mount(h(links.LinksPage, { onOpen: () => {} }));
+    await click(field(m.host, "Revoke"));
+    await click(field(openDialog(m.host), "Revoke the link"));
+    await flush();
+    assert.match(openDialog(m.host).textContent ?? "", /That link is gone\. Reload the page and look again\./);
+    assert.doesNotMatch(m.host.textContent ?? "", /raw upstream/);
+    await m.unmount();
+  });
+});
+
+describe("Page: links", () => {
+  it("Create link: label, lifetime and version go into link_create; the address is shown once, with Copy", async () => {
+    reset();
+    viewerReady();
+    stub.out.link_create = MADE;
+    const m = await mountPage();
+    await click(field(within(m.host, "Links"), "Create link"));
+    const dialog = openDialog(m.host);
+    assert.match(dialog.textContent ?? "", /Anyone who has the address can open this page without an account/);
+    await typeInto(dialog.querySelector("input") as Element, "Board");
+    await choose(dialog, 0, "30 days");
+    await choose(dialog, 1, "Only version 6");
+    await click(field(dialog, "Create link"));
+    await flush();
+    assert.deepEqual(callsOf("link_create").map((c) => c.input), [{ id: "art_weekly", label: "Board", expiresInDays: 30, pin: 6 }]);
+    const shown = openDialog(m.host);
+    assert.match(shown.textContent ?? "", /The link is ready/);
+    assert.match(shown.textContent ?? "", /tbv_SECRETSECRET/);
+    assert.match(shown.textContent ?? "", /the app shows it only once and keeps a fingerprint/);
+    assert.ok(field(shown, "Copy"), "a Copy button");
+    assert.deepEqual(alerts(m.host), []);
+    await click(field(shown, "Done"));
+    await flush();
+    assert.doesNotMatch(m.host.textContent ?? "", /tbv_SECRET/, "the address is gone once the dialog is closed");
+    await m.unmount();
+  });
+
+  it("the default is the owner's lifetime and the live version: only what was chosen is sent", async () => {
+    reset();
+    viewerReady();
+    stub.out.link_create = MADE;
+    const m = await mountPage();
+    await click(field(within(m.host, "Links"), "Create link"));
+    await click(field(openDialog(m.host), "Create link"));
+    await flush();
+    assert.deepEqual(callsOf("link_create").map((c) => c.input), [{ id: "art_weekly", expiresInDays: 7 }], "no label, no pin");
+    await m.unmount();
+  });
+
+  it("without a viewer address the form says so and Create is off; a refusal from the server is the same plain sentence", async () => {
+    reset(); // preview ticket: view_origin_missing
+    const m = await mountPage();
+    await click(field(within(m.host, "Links"), "Create link"));
+    const dialog = openDialog(m.host);
+    assert.match(dialog.textContent ?? "", /Links and previews need the viewer address/);
+    assert.ok(field(dialog, "Create link").disabled);
+    await m.unmount();
+    reset();
+    viewerReady();
+    stub.fail.link_create = { status: 409, code: "view_origin_missing" };
+    const late = await mountPage();
+    await click(field(within(late.host, "Links"), "Create link"));
+    await click(field(openDialog(late.host), "Create link"));
+    await flush();
+    assert.match(openDialog(late.host).textContent ?? "", /Links and previews need the viewer address\. Ask Portal to redeploy the bridge\./);
+    assert.doesNotMatch(late.host.textContent ?? "", /raw upstream/);
+    await late.unmount();
+  });
+
+  it("the caps are plain sentences", async () => {
+    for (const [code, text] of [
+      ["links_limit_artifact", /This page has 5 active links\. Revoke one first\./],
+      ["links_limit_workspace", /The workspace has 50 active links\. Revoke one first\./],
+    ] as const) {
+      reset();
+      viewerReady();
+      stub.fail.link_create = { status: 409, code };
+      const m = await mountPage();
+      await click(field(within(m.host, "Links"), "Create link"));
+      await click(field(openDialog(m.host), "Create link"));
+      await flush();
+      assert.match(openDialog(m.host).textContent ?? "", text);
+      await m.unmount();
+    }
+  });
+
+  it("an archived page offers no new link", async () => {
+    reset();
+    viewerReady();
+    stub.out.artifact_detail = { ...DETAIL, artifact: { ...DETAIL.artifact, status: "archived" } };
+    const m = await mountPage();
+    assert.ok(field(within(m.host, "Links"), "Create link").disabled);
+    await m.unmount();
+  });
+
+  it("Revoke on a link asks first, then calls link_revoke and reads the page again; ended links have no Revoke", async () => {
+    reset();
+    stub.out.artifact_detail = {
+      ...DETAIL,
+      links: [...DETAIL.links, { ...DETAIL.links[0], id: "lnk_2", label: "Old", status: "expired", views: 1, lastSeenDay: null }, { ...DETAIL.links[0], id: "lnk_3", label: "Gone", status: "revoked", revokedAt: "2026-10-12T08:00:00.000Z" }],
+    };
+    const m = await mountPage();
+    const box = within(m.host, "Links");
+    assert.equal([...box.querySelectorAll("button")].filter((b) => b.textContent === "Revoke").length, 1);
+    assert.match(box.textContent ?? "", /Old.*Ended/);
+    assert.match(box.textContent ?? "", /Gone.*Revoked/);
+    const before = callsOf("artifact_detail").length;
+    await click(field(box, "Revoke"));
+    assert.equal(callsOf("link_revoke").length, 0);
+    await click(field(openDialog(m.host), "Revoke the link"));
+    await flush();
+    assert.deepEqual(callsOf("link_revoke").map((c) => c.input), [{ linkId: "lnk_1" }]);
+    assert.ok(callsOf("artifact_detail").length > before, "the page is read again");
+    await m.unmount();
+  });
+});
+
+describe("Review and share: step 3", () => {
+  async function toStep3(m: Awaited<ReturnType<typeof mount>>) {
+    await click(field(within(m.host, "Review and share"), "Review and share"));
+    const dialog = openDialog(m.host);
+    // a step change fades out and in (the kit's --tb-dur-step), so wait for it
+    const settle = () => act(async () => new Promise((r) => setTimeout(r, 500)));
+    await click(field(dialog, "Next"));
+    await settle();
+    await click(field(dialog, "Next"));
+    await settle();
+    return dialog;
+  }
+  it("shows the form and the limits in plain words; Create link makes the link, shows the address once, Done closes", async () => {
+    reset();
+    viewerReady();
+    stub.out.link_create = MADE;
+    const m = await mountPage();
+    const dialog = await toStep3(m);
+    assert.match(dialog.textContent ?? "", /Who may open this page\?/);
+    assert.match(dialog.textContent ?? "", /Anyone who has the address can open it until it ends or you revoke it/);
+    assert.match(dialog.textContent ?? "", /What a link cannot promise/);
+    assert.match(dialog.textContent ?? "", /the names the page looks up or the set-up of a video call/);
+    assert.match(dialog.textContent ?? "", /Everything the page shows can be copied by whoever sees it/);
+    assert.match(dialog.textContent ?? "", /wait for you before link holders see them/);
+    assert.match(dialog.textContent ?? "", /1 link of this page is active\. At most 5\./);
+    assert.ok(field(dialog, "Finish without a link"), "Skip has its own words");
+    await typeInto(dialog.querySelector('input[type="text"], input:not([type])') as Element, "Accountant");
+    await choose(dialog, 0, "1 day");
+    await click(field(dialog, "Create link"));
+    await flush();
+    assert.deepEqual(callsOf("link_create").map((c) => c.input), [{ id: "art_weekly", label: "Accountant", expiresInDays: 1 }]);
+    assert.match(dialog.textContent ?? "", /The link is ready/);
+    assert.match(dialog.textContent ?? "", /tbv_SECRETSECRET/);
+    assert.equal(callsOf("link_create").length, 1);
+    await click(field(dialog, "Done"));
+    await flush();
+    assert.doesNotMatch(m.host.textContent ?? "", /tbv_SECRET/, "closed: the address is gone");
+    assert.equal(callsOf("link_create").length, 1, "Done sends nothing");
+    await m.unmount();
+  });
+  it("without a viewer address Create link is off and the notice says why; Finish without a link closes", async () => {
+    reset(); // preview ticket: view_origin_missing
+    const m = await mountPage();
+    const dialog = await toStep3(m);
+    assert.match(dialog.textContent ?? "", /Links and previews need the viewer address/);
+    assert.ok(field(dialog, "Create link").disabled);
+    await click(field(dialog, "Finish without a link"));
+    await flush();
+    assert.equal(callsOf("link_create").length, 0);
+    assert.equal(
+      [...m.host.querySelectorAll("dialog")].filter((d) => d.childElementCount > 0).length,
+      0,
+      "the review is closed",
+    );
+    await m.unmount();
+  });
+  it("a refused link keeps the step open with a plain sentence", async () => {
+    reset();
+    viewerReady();
+    stub.fail.link_create = { status: 409, code: "links_limit_artifact" };
+    const m = await mountPage();
+    const dialog = await toStep3(m);
+    await click(field(dialog, "Create link"));
+    await flush();
+    assert.match(dialog.textContent ?? "", /This page has 5 active links\. Revoke one first\./);
+    assert.ok(field(dialog, "Create link"), "still on the step");
+    await m.unmount();
+  });
+  it("step 2 lists pushed sources too, so the owner can show pushed numbers to link viewers", async () => {
+    reset();
+    const push = { ...SRC_OK, key: "numbers", kind: "push", label: "Weekly numbers", product: null, op: null, input: null, projection: null, digest: "sha256:cccc", viewers: false, approved: true };
+    stub.out.artifact_detail = { ...DETAIL, sources: [SRC_OK, push] };
+    const m = await mountPage();
+    await click(field(within(m.host, "Review and share"), "Review and share"));
+    const dialog = openDialog(m.host);
+    await click(field(dialog, "Next"));
+    const sw = [...dialog.querySelectorAll('input[role="switch"]')].find((x) => x.closest(".la-source")?.textContent?.includes("Weekly numbers")) as HTMLInputElement;
+    assert.ok(sw, "a switch for the pushed source");
+    await click(sw);
+    await flush();
+    assert.deepEqual(callsOf("source_approve").map((c) => c.input), [{ id: "art_weekly", key: "numbers", digest: "sha256:cccc", viewers: true }]);
+    await m.unmount();
+  });
+});
+
 describe("Settings", () => {
   it("shows the saved link lifetime and saves another with settings_set", async () => {
     reset();
     const m = await mount(h(settings.SettingsPage, {}));
     assert.equal(m.host.querySelector(".tb-select-value")?.textContent, "7 days");
-    assert.match(m.host.textContent ?? "", /Not set yet/);
+    assert.match(m.host.textContent ?? "", /Ready/, "the viewer address is there");
+    assert.doesNotMatch(m.host.textContent ?? "", /Not set yet/);
     await click(m.host.querySelector('[role="combobox"]') as Element);
     const option = [...m.host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.startsWith("30 days"));
     assert.ok(option);
     await click(option);
     await flush();
     assert.deepEqual(callsOf("settings_set").map((c) => c.input), [{ defaultLinkDays: 30 }]);
+    await m.unmount();
+  });
+});
+
+describe("Settings: viewer address", () => {
+  it("says Not set yet when the server reports the missing viewer address", async () => {
+    reset();
+    stub.out.gallery_view = { galleries: [], items: [], nextCursor: null, counts: COUNTS, notices: [{ code: "view_origin_missing", message: "x" }], settings: { defaultLinkDays: 7 } };
+    const m = await mount(h(settings.SettingsPage, {}));
+    assert.match(m.host.textContent ?? "", /Not set yet/);
+    assert.match(m.host.textContent ?? "", /Ask Portal to redeploy the bridge/);
     await m.unmount();
   });
 });
@@ -484,7 +792,18 @@ describe("App", () => {
     assert.equal(m.host.querySelector(".app-page h1")?.textContent, "Weekly operations");
     assert.deepEqual(callsOf("artifact_detail").map((c) => c.input), [{ id: "art_weekly" }]);
     const nav = [...m.host.querySelectorAll("nav a")].map((a) => a.textContent?.replace(/\d+$/, "").trim());
-    assert.deepEqual(nav.slice(0, 7), ["Gallery", "Page", "Holds", "Receipts", "Agents & scopes", "Settings", "Backups & export"]);
+    assert.deepEqual(nav.slice(0, 8), ["Gallery", "Page", "Links", "Holds", "Receipts", "Agents & scopes", "Settings", "Backups & export"]);
+    await m.unmount();
+    win.history.pushState(null, "", "/a/live-artifacts/");
+  });
+  it("/links opens the Links page", async () => {
+    reset();
+    stub.out.links_list = { items: LINK_ROWS, active: 2 };
+    win.history.pushState(null, "", "/a/live-artifacts/links");
+    const m = await mount(h(app.App, {}));
+    assert.equal(m.host.querySelector(".app-page h1")?.textContent, "Links");
+    assert.equal(callsOf("links_list").length, 1);
+    assert.equal(m.host.querySelectorAll("tbody tr").length, 4);
     await m.unmount();
     win.history.pushState(null, "", "/a/live-artifacts/");
   });

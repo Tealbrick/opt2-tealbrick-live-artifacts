@@ -116,7 +116,11 @@ export function listLinks(db: Db, now: number) {
 // ─────────────────────────────────────────────────────────── hold texts (DESIGN T4, §3.1)
 
 const KIB = 1024;
-const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+/** Agent-written text (titles, labels) in a hold: one line, no control characters, so it cannot fake lines of the hold text. */
+const clip = (s: string, n: number): string => {
+  const one = s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/gu, " ").trim();
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+};
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const kib = (bytes: number): string => `${Math.max(1, Math.round(bytes / KIB))} KiB`;
 /** "sha256:<hex>" → its first 16 hex digits, enough for the owner to compare with what the agent reports. */
