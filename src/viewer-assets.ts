@@ -37,7 +37,6 @@ export const SHELL_JS = `(() => {
   document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   const base = location.pathname.replace(/\\/+$/, "");
   const $ = (id) => document.getElementById(id);
-  const MAX_MSG = 256;
   let frame = null, live = 0, etag = null, state = null, ready = false;
   const ago = (iso) => {
     if (!iso) return "never";
@@ -62,17 +61,20 @@ export const SHELL_JS = `(() => {
       f.setAttribute("sandbox", "allow-scripts");
       f.setAttribute("referrerpolicy", "no-referrer");
       f.setAttribute("title", state.title);
-      f.src = base + "/d/" + live;
+      f.src = "/v/live-artifacts/" + state.doc;
       if (frame) frame.replaceWith(f); else $("stage").appendChild(f);
       frame = f;
     }
     send();
   }
   window.addEventListener("message", (e) => {
-    if (!frame || e.source !== frame.contentWindow || !e.data || typeof e.data.type !== "string") return;
-    if (JSON.stringify(e.data).length > MAX_MSG) return;
-    if (e.data.type === "tb:ready") { ready = true; send(); }
-    else if (e.data.type === "tb:resize" && Number.isFinite(e.data.height)) frame.style.height = Math.min(Math.max(120, e.data.height), 20000) + "px";
+    if (!frame || e.source !== frame.contentWindow) return;
+    const d = e.data;
+    // cheap checks only (no stringify of attacker data); unknown types are ignored
+    if (d === null || typeof d !== "object") return;
+    const type = d.type;
+    if (type === "tb:ready") { ready = true; send(); }
+    else if (type === "tb:resize") { const h = d.height; if (typeof h === "number" && Number.isFinite(h)) frame.style.height = Math.min(Math.max(120, Math.round(h)), 20000) + "px"; }
   });
   async function load() {
     try {
@@ -130,12 +132,10 @@ export const SHELL_HTML = `<!doctype html>
 <main id="stage"></main><footer>Tealbrick Live Artifacts. The page above runs in a sandbox with no network.</footer>
 <script src="/v/live-artifacts/${SHELL_JS_PATH}"></script></body></html>`;
 
-/** Insert the tb helper as the first script of the agent's document (after <head>, else <html>, else the doctype). */
+/** Insert the tb helper as the first script: right after a LEADING doctype, else at the very start. Never searches the
+ *  document (review PR #2, finding 1: a whole-document regex was quadratic, and could land inside a comment or string). */
 export function injectHelper(html: string): string {
   const tag = `<script>${TB_HELPER}</script>`;
-  for (const re of [/<head\b[^>]*>/i, /<html\b[^>]*>/i, /<!doctype[^>]*>/i]) {
-    const m = re.exec(html);
-    if (m) return html.slice(0, m.index + m[0].length) + tag + html.slice(m.index + m[0].length);
-  }
-  return tag + html;
+  const m = /^\s{0,200}<!doctype[^>]{0,100}>/i.exec(html);
+  return m ? html.slice(0, m[0].length) + tag + html.slice(m[0].length) : tag + html;
 }

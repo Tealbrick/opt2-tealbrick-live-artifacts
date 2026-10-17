@@ -2710,10 +2710,10 @@
         }
       },
       "crud": [
-        "create"
+        "update"
       ],
       "effect": "write",
-      "idempotency": "required",
+      "idempotency": "supported",
       "receipt": false
     },
     {

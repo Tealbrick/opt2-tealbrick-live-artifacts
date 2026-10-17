@@ -70,7 +70,8 @@ import { createPreview, VIEW_PREFIX } from "./viewer.ts";
  *  field gives undefined → null → view_origin_missing. */
 export function viewUrlOf(ctx: object): string | null {
   const v = (ctx as { viewUrl?: unknown }).viewUrl;
-  return typeof v === "string" && /^https:\/\/[^/]+$/.test(v) ? v : null;
+  // host[:port] only: the value goes into CSP headers (review PR #2, finding 11)
+  return typeof v === "string" && /^https:\/\/[a-z0-9.-]{1,253}(:\d{1,5})?$/.test(v) ? v : null;
 }
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];

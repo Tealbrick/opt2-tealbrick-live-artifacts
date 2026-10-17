@@ -4,10 +4,12 @@
 //
 // URLs (GET only; prefix /v/live-artifacts):
 //   /<token>            the shell (our HTML + JS, no data in HTML)
-//   /<token>/d/<n>      the artifact document, version n (only the version the link resolves to)
-//   /<token>/data       JSON for the shell: banner fields + the sources this link may show (ETag, 304)
+//   /<token>/data       JSON for the shell: banner fields, the sources this link may show (ETag, 304), and `doc`
+//   /_d/<doc ticket>    the artifact document. The ticket is NOT the link token (review PR #2, finding 3: agent code can
+//                       read its own URL): an HMAC over (link, version, expiry) that authorises only this HTML, which
+//                       the page holds anyway. It is served only into a frame (Sec-Fetch-Dest: iframe).
 //   /_s/<hash>.js|css   shell assets, content-hashed, immutable
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { digest, opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { LIMITS } from "./limits.ts";
@@ -17,7 +19,10 @@ import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS
 export const VIEW_PREFIX = "/v/live-artifacts";
 export const TOKEN_RE = /^tbv_[A-Za-z0-9_-]{43}$/;
 export const PREVIEW_TTL_MS = 10 * 60 * 1000;
-const DAY_MS = 86_400_000;
+/** live preview tokens per page */
+export const PREVIEWS_PER_ARTIFACT = 3;
+/** document tickets last 10–15 minutes (5-minute buckets keep the /data ETag stable); the shell refreshes them */
+const DOC_BUCKET_MS = 5 * 60 * 1000;
 
 /** A new viewer/preview token: `tbv_` + base64url of 32 random bytes. Only its sha256 is stored (LA-5). */
 export function newToken(): string {
@@ -25,6 +30,8 @@ export function newToken(): string {
 }
 
 export interface ViewerConfig {
+  /** HMAC key for document tickets (an app secret, ctx.secrets; never leaves the app) */
+  docKey: string;
   /** https origin of the views origin (LA-1 `bridge.viewUrl`), or null when the bridge has none */
   viewOrigin: string | null;
   /** https origin of the main bridge origin (the owner UI frames previews from there) */
@@ -35,9 +42,10 @@ export interface ViewerConfig {
 
 // ─────────────────────────────────────────────────────────── headers
 
-/** CSP of the shell (DESIGN §5.3). Previews may be framed by the owner UI on the main origin; viewer links by nobody. */
+/** CSP of the shell (DESIGN §5.3). Previews may be framed by the owner UI on the main origin; viewer links by nobody.
+ *  The shell may frame only document tickets (review PR #2, finding 5). */
 export function shellCsp(cfg: ViewerConfig, preview: boolean): string {
-  const frameSrc = cfg.viewOrigin ? `${cfg.viewOrigin}${VIEW_PREFIX}/` : "'self'";
+  const frameSrc = cfg.viewOrigin ? `${cfg.viewOrigin}${VIEW_PREFIX}/_d/` : "'self'";
   const ancestors = preview && cfg.mainOrigin ? cfg.mainOrigin : "'none'";
   return [
     "default-src 'none'",
@@ -52,8 +60,10 @@ export function shellCsp(cfg: ViewerConfig, preview: boolean): string {
     `frame-ancestors ${ancestors}`,
   ].join("; ");
 }
-/** CSP of the agent document: an opaque origin even when opened directly, no network, framed only by the views origin. */
-export function documentCsp(cfg: ViewerConfig): string {
+/** CSP of the agent document: an opaque origin even when opened directly, no network, framed only by the shell (views
+ *  origin; for a preview also the owner UI above the shell — frame-ancestors checks EVERY ancestor, finding 2). */
+export function documentCsp(cfg: ViewerConfig, preview = false): string {
+  const ancestors = [cfg.viewOrigin ?? "'self'", ...(preview && cfg.mainOrigin ? [cfg.mainOrigin] : [])].join(" ");
   return [
     "sandbox allow-scripts",
     "default-src 'none'",
@@ -68,7 +78,7 @@ export function documentCsp(cfg: ViewerConfig): string {
     "object-src 'none'",
     "form-action 'none'",
     "base-uri 'none'",
-    `frame-ancestors ${cfg.viewOrigin ?? "'self'"}`,
+    `frame-ancestors ${ancestors}`,
   ].join("; ");
 }
 /** The app's own floor (the bridge forces VIEWER_HEADER_FLOOR as well, LA-1; both are tested). */
@@ -90,7 +100,8 @@ function respond(status: number, body: string | null, type: string, csp: string,
 }
 /** One answer for every unknown, expired, revoked, archived or mismatched token (DESIGN T5: same body, same code path). */
 const NOT_FOUND_BODY = "Not found";
-const notFound = () => respond(404, NOT_FOUND_BODY, "text/plain; charset=utf-8", "default-src 'none'; sandbox");
+const BARE_CSP = "default-src 'none'; sandbox; frame-ancestors 'none'";
+const notFound = () => respond(404, NOT_FOUND_BODY, "text/plain; charset=utf-8", BARE_CSP);
 
 // ─────────────────────────────────────────────────────────── links
 
@@ -103,7 +114,9 @@ export interface LinkRow {
 /** Resolve a token to a usable link, or null (unknown, expired, revoked, artifact gone or archived). */
 export function resolveToken(db: Db, token: string, now: number): LinkRow | null {
   if (!TOKEN_RE.test(token)) return null;
-  const r = db.prepare("SELECT * FROM la_link WHERE token_digest = ?").get(opaqueDigest(token));
+  return usableLink(db.prepare("SELECT * FROM la_link WHERE token_digest = ?").get(opaqueDigest(token)), db, now);
+}
+function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number): LinkRow | null {
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;
@@ -118,14 +131,35 @@ export function createPreview(db: Db, artifactId: string, version: number | null
   const token = newToken();
   const expiresAt = now + PREVIEW_TTL_MS;
   db.transaction(() => {
-    // previews are deleted one day after they expire (DESIGN §4.1)
-    db.prepare("DELETE FROM la_link WHERE kind = 'preview' AND expires_at < ?").run(now - DAY_MS);
+    // expired previews go at once; at most PREVIEWS_PER_ARTIFACT live ones per page (the oldest is dropped; finding 13)
+    db.prepare("DELETE FROM la_link WHERE kind = 'preview' AND expires_at <= ?").run(now);
+    db.prepare(
+      `DELETE FROM la_link WHERE kind = 'preview' AND artifact_id = ?1 AND id NOT IN
+         (SELECT id FROM la_link WHERE kind = 'preview' AND artifact_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2)`,
+    ).run(artifactId, PREVIEWS_PER_ARTIFACT - 1);
     db.prepare(
       `INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version)
        VALUES (?, ?, 'preview', ?, 'preview', ?, ?, ?, ?, ?, ?)`,
     ).run(`lnk_${ulid(now)}`, artifactId, opaqueDigest(token), by.type, by.id, by.name, now, expiresAt, n);
   });
   return { token, version: n, expiresAt };
+}
+
+const mac = (key: string, payload: string): string => createHmac("sha256", key).update(payload).digest("base64url").slice(0, 32);
+/** A document ticket for (link, version): `<linkId>.<n>.<exp>.<mac>`. It authorises only that version's HTML. */
+export function docTicket(cfg: ViewerConfig, linkId: string, n: number, now: number): string {
+  const exp = (Math.floor(now / DOC_BUCKET_MS) + 3) * DOC_BUCKET_MS;
+  return `${linkId}.${n}.${exp}.${mac(cfg.docKey, `${linkId}|${n}|${exp}`)}`;
+}
+function checkTicket(cfg: ViewerConfig, ticket: string, now: number): { linkId: string; n: number } | null {
+  const m = /^(lnk_[0-9A-HJKMNP-TV-Z]{26})\.(\d{1,7})\.(\d{13})\.([A-Za-z0-9_-]{32})$/.exec(ticket);
+  if (!m) return null;
+  const [, linkId, n, exp, got] = m as unknown as [string, string, string, string, string];
+  if (Number(exp) <= now) return null;
+  const want = Buffer.from(mac(cfg.docKey, `${linkId}|${n}|${exp}`));
+  const have = Buffer.from(got);
+  if (want.length !== have.length || !timingSafeEqual(want, have)) return null;
+  return { linkId, n: Number(n) };
 }
 
 /** The version a link shows: a pinned one, else the live one. */
@@ -151,6 +185,9 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
     const visible = approved && (link.kind === "preview" || Number(r.viewers) === 1);
     const fetchedAt = r.fetched_at === null || r.fetched_at === undefined ? null : Number(r.fetched_at);
     if (visible && fetchedAt !== null && (newest === null || fetchedAt > newest)) newest = fetchedAt;
+    // a viewer link learns nothing about sources it may not show: no entry at all (finding 4); the owner's preview
+    // lists every source with its state
+    if (!visible && link.kind !== "preview") continue;
     const entry: Record<string, Json> = { status: approved ? String(r.status ?? "empty") : "not_approved", fetchedAt: fetchedAt === null ? null : new Date(fetchedAt).toISOString() };
     if (visible && r.data_json !== null && r.data_json !== undefined) entry.data = JSON.parse(String(r.data_json)) as Json;
     sources[String(r.key)] = entry;
@@ -162,6 +199,7 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
     workspace: cfg.workspaceName,
     madeBy: String(a.created_by_name),
     live: versionFor(db, link),
+    doc: `_d/${docTicket(cfg, link.id, versionFor(db, link), now)}`,
     preview: link.kind === "preview",
     fetchedAt: newest === null ? null : new Date(newest).toISOString(),
     stale: stale || String(a.refresh_state) === "paused_error",
@@ -171,8 +209,10 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
   return { ...body, rev: digest(body as Json) };
 }
 
-function countView(db: Db, link: LinkRow, now: number): void {
-  if (link.kind !== "viewer") return;
+/** Counts shell loads of viewer links that are real page navigations (Sec-Fetch-Dest: document), not unfurl bots or
+ *  prefetches without Fetch Metadata (finding 9). */
+function countView(db: Db, link: LinkRow, req: Request, now: number): void {
+  if (link.kind !== "viewer" || req.headers.get("sec-fetch-dest") !== "document") return;
   const day = new Date(now).toISOString().slice(0, 10);
   db.transaction(() => {
     db.prepare("UPDATE la_link SET views = views + 1, last_seen_day = ? WHERE id = ?").run(day, link.id);
@@ -190,7 +230,7 @@ const ASSETS: Record<string, { body: string; type: string }> = {
 
 /** Serve one viewer request. `path` is the URL path (must start with VIEW_PREFIX). */
 export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: number): Response {
-  if (req.method !== "GET") return respond(405, null, "", "default-src 'none'; sandbox", { allow: "GET" });
+  if (req.method !== "GET") return respond(405, null, "", BARE_CSP, { allow: "GET" });
   const path = new URL(req.url).pathname;
   if (!path.startsWith(`${VIEW_PREFIX}/`)) return notFound();
   const rest = path.slice(VIEW_PREFIX.length + 1).split("/");
@@ -199,12 +239,24 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     if (!asset) return notFound();
     return respond(200, asset.body, asset.type, "default-src 'none'", { "cache-control": "public, max-age=31536000, immutable" });
   }
+  if (rest[0] === "_d" && rest.length === 2) {
+    // The document is served only INTO a frame (Fetch Metadata). Opened on its own, a hostile page could still navigate
+    // the top window (CSP cannot stop a top-level `location =`). Fail closed: no Sec-Fetch-Dest → 404 too.
+    if (req.headers.get("sec-fetch-dest") !== "iframe") return notFound();
+    const t = checkTicket(cfg, rest[1] ?? "", now);
+    if (!t) return notFound();
+    const link = usableLink(db.prepare("SELECT * FROM la_link WHERE id = ?").get(t.linkId), db, now);
+    if (!link || t.n !== versionFor(db, link)) return notFound(); // a link reads its own version only
+    const v = versionRow(db, link.artifactId, t.n);
+    if (!v) return notFound();
+    const html = injectHelper(Buffer.from(v.html as Uint8Array).toString("utf8"));
+    return respond(200, html, "text/html; charset=utf-8", documentCsp(cfg, link.kind === "preview"));
+  }
   const link = resolveToken(db, rest[0] ?? "", now);
   if (!link) return notFound();
   const preview = link.kind === "preview";
-
   if (rest.length === 1) {
-    countView(db, link, now);
+    countView(db, link, req, now);
     return respond(200, SHELL_HTML, "text/html; charset=utf-8", shellCsp(cfg, preview));
   }
   if (rest.length === 2 && rest[1] === "data") {
@@ -212,18 +264,6 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     const etag = `"${String(data.rev).replace(/^sha256:/, "").slice(0, 32)}"`;
     if (req.headers.get("if-none-match") === etag) return respond(304, null, "", "default-src 'none'", { etag });
     return respond(200, JSON.stringify(data), "application/json; charset=utf-8", "default-src 'none'", { etag });
-  }
-  if (rest.length === 3 && rest[1] === "d" && /^\d{1,7}$/.test(rest[2] ?? "")) {
-    // The document is served only INTO a frame (Fetch Metadata). Opened on its own, a hostile page could still navigate the
-    // top window (CSP cannot stop a top-level `location =`); refusing direct opens closes that path. Fail closed: a
-    // browser that sends no Sec-Fetch-Dest gets the 404 too.
-    if (req.headers.get("sec-fetch-dest") !== "iframe") return notFound();
-    const n = Number(rest[2]);
-    if (n !== versionFor(db, link)) return notFound(); // a link reads its own version only
-    const v = versionRow(db, link.artifactId, n);
-    if (!v) return notFound();
-    const html = injectHelper(Buffer.from(v.html as Uint8Array).toString("utf8"));
-    return respond(200, html, "text/html; charset=utf-8", documentCsp(cfg));
   }
   return notFound();
 }
