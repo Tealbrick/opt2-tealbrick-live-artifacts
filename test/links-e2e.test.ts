@@ -10,9 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
-import { digest, type Ed25519KeyPair, generateKeyPair, signCallProof, signGrant, signKeySetStatement, signSlice, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
-import { decideHold, defineApp, startApp } from "@opt2-tealbrick/miniapp-sdk";
-import type { Json, PersonPrincipal, RunningApp } from "@opt2-tealbrick/spec/sdk";
+import { digest, type Ed25519KeyPair, generateKeyPair, type HoldFamily, signCallProof, signGrant, signKeySetStatement, signSlice, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
+import { decideHold, defineApp, type Json, type PersonPrincipal, type RunningApp, startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { definition, manifest } from "../src/app.ts";
 import { setDocKey } from "../src/viewer.ts";
 
@@ -36,9 +35,9 @@ interface Booted {
   bridge: Server;
   dir: string;
   w: World;
-  call(op: string, input: Json, opts?: { held?: string[]; key?: string; agent?: string }): Promise<{ status: number; body: Record<string, any> }>;
+  call(op: string, input: Json, opts?: { held?: HoldFamily[]; key?: string; agent?: `agt_${string}` }): Promise<{ status: number; body: Record<string, any> }>;
   hold(id: string): { status: string; view: string | null; summary: string };
-  approve(id: string): Promise<void>;
+  approve(id: string): Promise<unknown>;
   viewer(path: string, headers?: Record<string, string>, method?: string): Promise<Response>;
   links(): Record<string, unknown>[];
   stop(): Promise<void>;
@@ -180,7 +179,7 @@ describe("links on the real SDK (viewer address present)", () => {
 
   it("link_needs_hold: a grant that does not hold public_link is refused before anything is created (fail closed)", async () => {
     for (const op of ["artifact_share", "artifact_publish"] as const) {
-      const input = op === "artifact_share" ? { id: pageId } : { id: pageId, version: 1, data: [{ key: "n", digest: "sha256:x" }] };
+      const input: Json = op === "artifact_share" ? { id: pageId } : { id: pageId, version: 1, data: [{ key: "n", digest: "sha256:x" }] };
       const r = await b.call(op, input, { held: [], key: `idem-key-needs-${op}` });
       assert.equal(r.status, 403, `${op}: ${JSON.stringify(r.body)}`);
       assert.equal(r.body.error.code, "link_needs_hold");
