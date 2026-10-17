@@ -79,6 +79,7 @@ const DETAIL = {
   sources: [SRC_OK, SRC_NEW],
   links: [{ id: "lnk_1", label: "Novak Dental", createdBy: actor("Scout"), createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-21T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 14, lastSeenDay: "2026-10-13", status: "active" }],
   activity: [],
+  lint: [],
 };
 
 interface Stub {

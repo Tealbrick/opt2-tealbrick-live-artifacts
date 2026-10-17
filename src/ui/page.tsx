@@ -241,7 +241,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
       <PageHead
         title={a.title}
         tags={<PageTags a={a} />}
-        lede={`Made by ${a.createdBy.name}${oldest ? ` on ${dateOf(oldest.createdAt)}` : ""}. Version ${a.liveVersion} is live.${lastData ? ` Data was updated ${ago(lastData)}.` : ""}`}
+        lede={`Made by ${a.createdBy.name} on ${dateOf(String((a as { createdAt?: string }).createdAt ?? oldest?.createdAt ?? ""))}. Version ${a.liveVersion} is live.${lastData ? ` Data was updated ${ago(lastData)}.` : ""}`}
       >
         <div className="tb-ctas">
           <Button onClick={() => void change(() => run("artifact_archive", { id, archived: !archived }))} disabled={busy}>
@@ -426,6 +426,15 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                   Version {detail.version.n} is live: {Math.max(1, Math.round(detail.version.bytes / KIB))} KiB, written by {detail.version.createdBy.name} on {stamp(detail.version.createdAt)}. The preview on the page shows it as a viewer would see it.
                 </p>
                 <p className="tb-soft">The page cannot send data anywhere or load files from the network. A viewer can still copy what is on screen.</p>
+                {detail.lint.length > 0 ? (
+                  <ul className="tb-list">
+                    {detail.lint.map((l) => (
+                      <li key={l.code}>{l.message}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="tb-soft">The page check found nothing to note.</p>
+                )}
                 {staged ? <Notice tone="neutral">Version {staged.n} waits for you. Make it live in the Versions box after you looked at it.</Notice> : null}
                 {ticket.kind === "missing" ? <Notice tone="neutral">{VIEWER_MISSING}</Notice> : null}
               </div>

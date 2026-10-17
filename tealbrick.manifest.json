@@ -443,7 +443,8 @@
               "createdBy",
               "autoPublish",
               "origin",
-              "forkedFrom"
+              "forkedFrom",
+              "createdAt"
             ],
             "properties": {
               "id": {
@@ -641,6 +642,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
               }
             }
           },
@@ -2277,7 +2283,8 @@
           "versions",
           "sources",
           "links",
-          "activity"
+          "activity",
+          "lint"
         ],
         "properties": {
           "artifact": {
@@ -2748,6 +2755,37 @@
                   "type": "string",
                   "minLength": 0,
                   "maxLength": 280
+                }
+              }
+            }
+          },
+          "lint": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "level",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "advice"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
                 }
               }
             }
