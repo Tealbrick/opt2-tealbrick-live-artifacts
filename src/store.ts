@@ -301,16 +301,16 @@ function insertVersion(db: Db, id: string, n: number, html: string, contract: Co
 }
 
 /** Keep the newest LIMITS.versionsKept versions plus the live, the staged and every version pinned by a link. */
-export function pruneVersions(db: Db, id: string): number {
+export function pruneVersions(db: Db, id: string, now: number): number {
   const r = db
     .prepare(
       `DELETE FROM la_version WHERE artifact_id = ?1
          AND n NOT IN (SELECT n FROM la_version WHERE artifact_id = ?1 ORDER BY n DESC LIMIT ?2)
          AND n <> (SELECT live_version FROM la_artifact WHERE id = ?1)
          AND n <> COALESCE((SELECT staged_version FROM la_artifact WHERE id = ?1), -1)
-         AND n NOT IN (SELECT pin_version FROM la_link WHERE artifact_id = ?1 AND pin_version IS NOT NULL AND revoked_at IS NULL)`,
+         AND n NOT IN (SELECT pin_version FROM la_link WHERE artifact_id = ?1 AND pin_version IS NOT NULL AND revoked_at IS NULL AND expires_at > ?3)`,
     )
-    .run(id, LIMITS.versionsKept);
+    .run(id, LIMITS.versionsKept, now);
   return Number(r.changes);
 }
 
@@ -407,46 +407,58 @@ export interface UpdateArgs {
   note: string;
   by: Actor;
 }
+/** The version an update builds on: the staged one if any, else the live one (never a rolled-back newer version). */
+export function baseVersion(a: Row): number {
+  return a.staged_version !== null ? Number(a.staged_version) : Number(a.live_version);
+}
+
+/** Make the sources and the schedule follow a contract that is going LIVE (staged contracts touch nothing live). */
+function applyContract(db: Db, id: string, contract: Contract, prev: Row, now: number): void {
+  syncSources(db, id, contract, now);
+  const s = scheduleColumns(contract, prev);
+  db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = ?, refresh_state = ? WHERE id = ?").run(s.every, s.approved, s.state, id);
+}
+
 export function updateArtifact(db: Db, id: string, u: UpdateArgs, now: number): { version: number; liveVersion: number; staged: boolean } {
   if (u.html !== undefined) assertHtml(u.html);
   return db.transaction(() => {
     const a = artifactRow(db, id);
     if (!a) throw notFound();
-    const newest = newestVersion(db, id);
-    if (u.expectedVersion !== undefined && u.expectedVersion !== newest)
-      throw new TbError("version_conflict", `the page changed since version ${u.expectedVersion} (newest is ${newest}); read it again`, 409);
-    const base = versionRow(db, id, newest);
+    if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
+    const baseN = baseVersion(a);
+    if (u.expectedVersion !== undefined && u.expectedVersion !== baseN)
+      throw new TbError("version_conflict", `the page changed since version ${u.expectedVersion} (it is now version ${baseN}); read it again`, 409);
+    const base = versionRow(db, id, baseN);
     if (!base) throw notFound();
-    let version = newest;
-    let staged = false;
+    const baseHtml = Buffer.from(base.html as Uint8Array).toString("utf8");
+    const staged = activeLinkCount(db, id, now) > 0 && String(a.auto_publish) === "owner";
+    let version = baseN;
     let live = Number(a.live_version);
-    const htmlChanged = u.html !== undefined && u.html !== Buffer.from(base.html as Uint8Array).toString("utf8");
-    const baseContract = parseStoredContract(String(base.contract_json));
+    const htmlChanged = u.html !== undefined && u.html !== baseHtml;
     const contractChanged = u.contract !== undefined && digest(contractJson(u.contract)) !== String(base.contract_sha256);
     if (htmlChanged || contractChanged) {
-      version = newest + 1;
-      const contract = u.contract ?? baseContract;
-      insertVersion(db, id, version, u.html ?? Buffer.from(base.html as Uint8Array).toString("utf8"), contract, u.by, u.note, now);
-      staged = activeLinkCount(db, id, now) > 0 && String(a.auto_publish) === "owner";
+      version = newestVersion(db, id) + 1;
+      const contract = u.contract ?? parseStoredContract(String(base.contract_json));
+      insertVersion(db, id, version, u.html ?? baseHtml, contract, u.by, u.note, now);
       if (staged) db.prepare("UPDATE la_artifact SET staged_version = ? WHERE id = ?").run(version, id);
       else {
         live = version;
         db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = NULL WHERE id = ?").run(version, id);
+        if (contractChanged) applyContract(db, id, contract, a, now);
       }
-      if (contractChanged) {
-        syncSources(db, id, contract, now);
-        const s = scheduleColumns(contract, a);
-        db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = ?, refresh_state = ? WHERE id = ?").run(s.every, s.approved, s.state, id);
-      }
-      pruneVersions(db, id);
+      pruneVersions(db, id, now);
     }
-    db.prepare("UPDATE la_artifact SET title = COALESCE(?, title), description = COALESCE(?, description), updated_at = ? WHERE id = ?").run(
-      u.title ?? null,
-      u.description ?? null,
-      now,
-      id,
-    );
-    logActivity(db, id, "artifact.update", u.by, version > newest ? `version ${version}${staged ? " (staged)" : ""}` : "details", now);
+    if (u.title !== undefined || u.description !== undefined) {
+      if (staged)
+        db.prepare("UPDATE la_artifact SET staged_title = COALESCE(?, staged_title), staged_description = COALESCE(?, staged_description) WHERE id = ?").run(
+          u.title ?? null,
+          u.description ?? null,
+          id,
+        );
+      else db.prepare("UPDATE la_artifact SET title = COALESCE(?, title), description = COALESCE(?, description) WHERE id = ?").run(u.title ?? null, u.description ?? null, id);
+    }
+    db.prepare("UPDATE la_artifact SET updated_at = ? WHERE id = ?").run(now, id);
+    logActivity(db, id, "artifact.update", u.by, version !== baseN ? `version ${version}${staged ? " (staged)" : ""}` : staged ? "details (staged)" : "details", now);
     return { version, liveVersion: live, staged };
   });
 }
@@ -464,23 +476,35 @@ export function deleteArtifact(db: Db, id: string, by: Actor, now: number): { de
 }
 
 export function putData(db: Db, id: string, key: string, data: Json, by: Actor, now: number): { key: string; bytes: number; digest: string; staged: boolean } {
-  const text = JSON.stringify(data);
+  let text: string;
+  let d: string;
+  try {
+    text = JSON.stringify(data);
+    d = digest(data);
+  } catch {
+    throw new TbError("data_invalid", "data cannot be stored (too deeply nested?)", 400);
+  }
   const bytes = utf8Bytes(text);
   if (bytes > LIMITS.snapshotBytes) throw new TbError("data_too_large", `data is larger than ${LIMITS.snapshotBytes / 1024} KiB`, 413);
   return db.transaction(() => {
     const a = artifactRow(db, id);
     if (!a) throw notFound();
+    if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
     const s = db.prepare("SELECT kind FROM la_source WHERE artifact_id = ? AND key = ?").get(id, key);
     if (!s) throw new TbError("source_unknown", `the page has no source "${key}"`, 404);
     if (String(s.kind) !== "push") throw new TbError("source_not_push", `source "${key}" is a read source; only push sources take data`, 409);
     const other = Number(
-      db.prepare("SELECT COALESCE(SUM(LENGTH(COALESCE(data_json, '')) + LENGTH(COALESCE(staged_json, ''))), 0) AS b FROM la_snapshot WHERE artifact_id = ? AND key <> ?").get(id, key)?.b ?? 0,
+      // bytes, not characters: LENGTH() of TEXT counts characters (review PR #1, finding 4)
+      db
+        .prepare(
+          "SELECT COALESCE(SUM(LENGTH(CAST(COALESCE(data_json, '') AS BLOB)) + LENGTH(CAST(COALESCE(staged_json, '') AS BLOB))), 0) AS b FROM la_snapshot WHERE artifact_id = ? AND key <> ?",
+        )
+        .get(id, key)?.b ?? 0,
     );
     const mine = db.prepare("SELECT data_json FROM la_snapshot WHERE artifact_id = ? AND key = ?").get(id, key);
     const staged = activeLinkCount(db, id, now) > 0 && String(a.auto_publish) === "owner";
     const keptLive = staged && mine?.data_json ? utf8Bytes(String(mine.data_json)) : 0;
     if (other + keptLive + bytes > LIMITS.artifactDataBytes) throw new TbError("data_too_large", `all data of one page is limited to ${LIMITS.artifactDataBytes / 1024} KiB`, 413);
-    const d = digest(data);
     if (staged)
       db.prepare(
         `INSERT INTO la_snapshot (artifact_id, key, staged_json, bytes, digest, status, pushed_by_id, pushed_by_name) VALUES (?, ?, ?, ?, ?, 'empty', ?, ?)
@@ -489,8 +513,8 @@ export function putData(db: Db, id: string, key: string, data: Json, by: Actor, 
     else
       db.prepare(
         `INSERT INTO la_snapshot (artifact_id, key, data_json, bytes, digest, fetched_at, status, code, pushed_by_id, pushed_by_name) VALUES (?, ?, ?, ?, ?, ?, 'ok', NULL, ?, ?)
-         ON CONFLICT (artifact_id, key) DO UPDATE SET data_json = excluded.data_json, bytes = excluded.bytes, digest = excluded.digest, fetched_at = excluded.fetched_at,
-           status = 'ok', code = NULL, pushed_by_id = excluded.pushed_by_id, pushed_by_name = excluded.pushed_by_name`,
+         ON CONFLICT (artifact_id, key) DO UPDATE SET data_json = excluded.data_json, staged_json = NULL, bytes = excluded.bytes, digest = excluded.digest,
+           fetched_at = excluded.fetched_at, status = 'ok', code = NULL, pushed_by_id = excluded.pushed_by_id, pushed_by_name = excluded.pushed_by_name`,
       ).run(id, key, text, bytes, d, now, by.id, by.name);
     db.prepare("UPDATE la_artifact SET updated_at = ? WHERE id = ?").run(now, id);
     logActivity(db, id, "data.put", by, `${key}: ${bytes} bytes${staged ? " (staged)" : ""}`, now);
@@ -503,9 +527,18 @@ export function publishVersion(db: Db, id: string, n: number, data: boolean, by:
   return db.transaction(() => {
     const a = artifactRow(db, id);
     if (!a) throw notFound();
-    if (!versionRow(db, id, n)) throw new TbError("version_unknown", `version ${n} does not exist (it may have been pruned)`, 404);
-    const keepStaged = a.staged_version !== null && Number(a.staged_version) !== n && Number(a.staged_version) > n;
-    db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = ?, updated_at = ? WHERE id = ?").run(n, keepStaged ? Number(a.staged_version) : null, now, id);
+    const v = versionRow(db, id, n);
+    if (!v) throw new TbError("version_unknown", `version ${n} does not exist (it may have been pruned)`, 404);
+    const stagedN = a.staged_version === null ? null : Number(a.staged_version);
+    const keepStaged = stagedN !== null && stagedN !== n && stagedN > n;
+    const publishesPending = stagedN === null || stagedN === n;
+    db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = ?, updated_at = ? WHERE id = ?").run(n, keepStaged ? stagedN : null, now, id);
+    if (publishesPending)
+      db.prepare(
+        "UPDATE la_artifact SET title = COALESCE(staged_title, title), description = COALESCE(staged_description, description), staged_title = NULL, staged_description = NULL WHERE id = ?",
+      ).run(id);
+    // the live version's contract decides sources and schedule (unchanged bindings keep their approval)
+    applyContract(db, id, parseStoredContract(String(v.contract_json)), a, now);
     const keys: string[] = [];
     if (data) {
       for (const r of db.prepare("SELECT key, staged_json FROM la_snapshot WHERE artifact_id = ? AND staged_json IS NOT NULL").all(id)) {
@@ -516,7 +549,7 @@ export function publishVersion(db: Db, id: string, n: number, data: boolean, by:
         keys.push(String(r.key));
       }
     }
-    pruneVersions(db, id);
+    pruneVersions(db, id, now);
     logActivity(db, id, "version.publish", by, `version ${n} live${keys.length ? `; data ${keys.join(", ")}` : ""}`, now);
     return { liveVersion: n, publishedKeys: keys };
   });

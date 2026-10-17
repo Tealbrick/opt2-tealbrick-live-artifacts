@@ -8,6 +8,8 @@ CREATE TABLE la_artifact (
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
   live_version INTEGER NOT NULL,
   staged_version INTEGER,
+  staged_title TEXT,                        -- title/description waiting for the owner on a shared page
+  staged_description TEXT,
   auto_publish TEXT NOT NULL DEFAULT 'owner' CHECK (auto_publish IN ('owner', 'agent')),
   refresh_every_s INTEGER,                  -- proposed or approved schedule (300..86400), NULL = none
   refresh_approved INTEGER NOT NULL DEFAULT 0,

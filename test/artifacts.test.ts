@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
+import { bindScopeDb, definition, handlers, NO_GALLERY, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { artifactRow, GALLERY, pruneVersions, SHARED_GALLERY } from "../src/store.ts";
 import { AGENT_A, AGENT_B, CRUD, ctxFor, type Instance, migratedDb, OWNER } from "./helpers.ts";
@@ -131,7 +131,10 @@ describe("versions and the live pointer", () => {
     await run("autopublish_set", { id, mode: "owner" }, O()); // agent changes now wait (the page has a link)
     for (let n = 27; n <= 29; n++) assert.equal((await run("artifact_update", { id, view: { html: page(n) } }, A())).staged, true);
     assert.deepEqual(ns(), [1, 7, ...range(10, 29)], "live 7 and pinned 1 survive; staged 29 is among the newest");
-    assert.equal(pruneVersions(db, id), 0, "prune is idempotent");
+    assert.equal(pruneVersions(db, id, now), 0, "prune is idempotent");
+    now += 2 * 86_400_000; // the pinning link expired: version 1 is no longer kept
+    pruneVersions(db, id, now);
+    assert.equal(ns()[0], 7);
     assert.equal(LIMITS.versionsKept, 20);
   });
 });
@@ -235,7 +238,9 @@ describe("copies, deletes and owner pages", () => {
     addLink(id);
     const spec = handlers.artifact_delete;
     assert.equal(spec.scope?.({ id } as never, AGENT_A as never), AGENT_A.id);
-    assert.throws(() => spec.scope?.({ id: "art_01J00000000000000000000000" } as never, AGENT_A as never), (e: { code?: string }) => e.code === "not_found");
+    // a missing id maps to a gallery nobody holds → the SDK refuses it like an unreachable gallery (no oracle, no hold)
+    assert.equal(spec.scope?.({ id: "art_01J00000000000000000000000" } as never, AGENT_A as never), NO_GALLERY);
+    assert.ok(!instances.some((i) => i.id === NO_GALLERY));
     assert.match(spec.holdView?.({ id } as never) ?? "", /Delete the live page "Blocked work"/);
     assert.deepEqual(await run("artifact_delete", { id }, A()), { deleted: true, linksRevoked: 1 });
     assert.equal(artifactRow(db, id), undefined);
@@ -278,5 +283,61 @@ describe("copies, deletes and owner pages", () => {
     assert.deepEqual([...p1.items, ...p2.items, ...p3.items].map((i: Out) => i.id), ids.reverse());
     assert.equal(p3.nextCursor, null);
     await rejects(run("artifact_list", { cursor: "bad" }, A()), "cursor_invalid");
+  });
+});
+
+describe("review of PR #1: regressions", () => {
+  it("finding 3: staged data from before a link was revoked never overwrites newer live data", async () => {
+    const { id } = await create(A(), { contract: { v: 1, inputs: [{ key: "n", kind: "push" }] } });
+    addLink(id);
+    assert.equal((await run("artifact_data_put", { id, key: "n", data: "X" }, A())).staged, true);
+    db.prepare("UPDATE la_link SET revoked_at = ? WHERE artifact_id = ?").run(now, id);
+    assert.equal((await run("artifact_data_put", { id, key: "n", data: "Y" }, A())).staged, false);
+    const pub = await run("publish_version", { id, version: 1 }, O());
+    assert.deepEqual(pub.publishedKeys, [], "nothing staged any more");
+    assert.deepEqual((await run("artifact_get", { id, include: ["data"] }, A())).data, { n: "Y" });
+  });
+  it("finding 4: the 1 MiB page quota counts bytes, not characters", async () => {
+    const keys = ["a", "b", "c", "d", "e"];
+    const { id } = await create(A(), { contract: { v: 1, inputs: keys.map((key) => ({ key, kind: "push" })) } });
+    const cjk = "漢".repeat(80_000); // 240 000 bytes, 80 000 characters
+    for (const k of keys.slice(0, 4)) await run("artifact_data_put", { id, key: k, data: cjk }, A());
+    await rejects(run("artifact_data_put", { id, key: "e", data: cjk }, A()), "data_too_large");
+  });
+  it("finding 5: after a rollback an update builds on the LIVE version, not the newer rolled-back one", async () => {
+    const { id } = await create(A());
+    await run("artifact_update", { id, view: { html: page(2) } }, A());
+    await run("publish_version", { id, version: 1 }, O());
+    const u = await run("artifact_update", { id, contract: { v: 1, inputs: [{ key: "n", kind: "push" }] } }, A());
+    assert.deepEqual([u.version, u.liveVersion], [3, 3]);
+    assert.equal((await run("artifact_get", { id }, A())).version.html, PAGE, "v3 carries v1's HTML");
+    await rejects(run("artifact_update", { id, expectedVersion: 2, title: "x" }, A()), "version_conflict");
+  });
+  it("finding 6: a staged contract or title change touches nothing live until the owner publishes it", async () => {
+    const { id } = await create(A(), { contract: { v: 1, inputs: [{ key: "n", kind: "push" }] } });
+    await run("artifact_data_put", { id, key: "n", data: 1 }, A());
+    addLink(id);
+    const u = await run("artifact_update", { id, title: "Phishing title", contract: { v: 1, inputs: [{ key: "m", kind: "push" }] } }, A());
+    assert.equal(u.staged, true);
+    let got = await run("artifact_get", { id, include: ["sources", "data"] }, A());
+    assert.equal(got.artifact.title, "Blocked work", "title waits");
+    assert.deepEqual(got.sources.map((x: Out) => x.key), ["n"], "live sources unchanged");
+    assert.deepEqual(got.data, { n: 1 }, "live data kept");
+    await run("publish_version", { id, version: u.version }, O());
+    got = await run("artifact_get", { id, include: ["sources", "data"] }, A());
+    assert.equal(got.artifact.title, "Phishing title");
+    assert.deepEqual(got.sources.map((x: Out) => x.key), ["m"]);
+    assert.deepEqual(got.data, {});
+  });
+  it("small items: archived pages refuse writes; empty titles; deep data; trigger source", async () => {
+    const { id } = await create(A(), { contract: { v: 1, inputs: [{ key: "n", kind: "push" }] } });
+    let deep: unknown = 1;
+    for (let k = 0; k < 20_000; k++) deep = [deep];
+    await rejects(run("artifact_data_put", { id, key: "n", data: deep }, A()), "data_invalid");
+    await run("artifact_archive", { id, archived: true }, O());
+    await rejects(run("artifact_update", { id, title: "x" }, A()), "artifact_archived");
+    await rejects(run("artifact_data_put", { id, key: "n", data: 1 }, A()), "artifact_archived");
+    await rejects(create(A(), { title: "   " }), "title_empty");
+    await rejects(create(A(), { contract: { v: 1, triggers: [{ kind: "schedule", everySeconds: 600, source: {} }] } }), "unsupported_in_this_version");
   });
 });

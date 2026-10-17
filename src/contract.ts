@@ -113,6 +113,7 @@ export function normalizeContract(raw: RawContract | undefined, companions: Comp
   for (const t of raw.triggers ?? []) {
     if (t.kind === "event") throw unsupported("event trigger", "version 0.3");
     if (t.kind !== "schedule") throw bad("trigger_invalid", "trigger kind must be schedule");
+    if (t.source !== undefined) throw unsupported("triggers[].source (event triggers)", "version 0.3");
     if (schedule) throw bad("trigger_duplicate", "at most one schedule trigger");
     if (typeof t.everySeconds !== "number") throw bad("trigger_invalid", "a schedule trigger needs everySeconds (300 to 86400)");
     schedule = { everySeconds: t.everySeconds };

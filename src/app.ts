@@ -91,12 +91,21 @@ let scopeDb: Db | null = null;
 export function bindScopeDb(db: Db | null): void {
   scopeDb = db;
 }
-/** Gallery that owns an artifact; a missing artifact answers not_found before authorize (no hold, no receipt). */
+/** A gallery id nobody holds (ids are agent/app ids or "shared"; `#` is outside the gallery id pattern). */
+export const NO_GALLERY = "#missing";
+/** Gallery that owns an artifact, so the SDK checks access to THAT gallery before any hold. A missing artifact maps to a
+ *  gallery nobody holds: the SDK refuses it exactly like an existing artifact in a gallery the caller cannot reach
+ *  (scope_denied, no hold), so the answer reveals nothing (review PR #1, finding 1). */
 function galleryOfArtifact(id: string): string | null {
   if (!scopeDb) return null;
   const r = artifactRow(scopeDb, id);
-  if (!r) throw notFound();
-  return String(r.gallery_id);
+  return r ? String(r.gallery_id) : NO_GALLERY;
+}
+/** Free text after trim must not be empty (the schema checks only the raw length). */
+function text(v: string, field: string): string {
+  const t = v.trim();
+  if (!t) throw new TbError(`${field}_empty`, `${field} is empty`, 400);
+  return t;
 }
 
 /** Make sure an agent's or app's own gallery exists (idempotent upsert on every call, KAN-01). */
@@ -227,7 +236,7 @@ export const handlers = {
         ctx.db,
         {
           gallery,
-          title: i.title.trim(),
+          title: text(i.title, "title"),
           description: (i.description ?? "").trim(),
           contract,
           html,
@@ -256,7 +265,7 @@ export const handlers = {
         i.id,
         {
           ...(i.expectedVersion !== undefined ? { expectedVersion: i.expectedVersion } : {}),
-          ...(i.title !== undefined ? { title: i.title.trim() } : {}),
+          ...(i.title !== undefined ? { title: text(i.title, "title") } : {}),
           ...(i.description !== undefined ? { description: i.description.trim() } : {}),
           ...(contract ? { contract } : {}),
           ...(html !== undefined ? { html } : {}),
@@ -377,7 +386,7 @@ export const handlers = {
       const lint = checkHtml(i.html);
       const r = createArtifact(
         ctx.db,
-        { gallery, title: i.title.trim(), description: (i.description ?? "").trim(), contract: EMPTY_CONTRACT, html: i.html, note: "", by: actorOf(ctx), origin: { kind: "owner", ref: null }, forkedFrom: null },
+        { gallery, title: text(i.title, "title"), description: (i.description ?? "").trim(), contract: EMPTY_CONTRACT, html: i.html, note: "", by: actorOf(ctx), origin: { kind: "owner", ref: null }, forkedFrom: null },
         clock(),
       );
       ctx.statusChanged();

@@ -38,3 +38,21 @@ describe("lintHtml", () => {
     for (const v of ["https://a", "HTTP://a", "//a", "javascript:alert(1)", "ftp://a"]) assert.equal(isExternal(v), true, v);
   });
 });
+
+describe("lintHtml stays fast on hostile input (review PR #1, finding 2)", () => {
+  it("256 KiB of unterminated tag starts lints in well under a second (no quadratic regex)", () => {
+    for (const unit of ["<meta ", "<link ", 'src="', "url(", "<a href=", "href=x "]) {
+      const html = unit.repeat(Math.floor((256 * 1024) / unit.length));
+      const t0 = performance.now();
+      lintHtml(html);
+      const ms = performance.now() - t0;
+      assert.ok(ms < 1000, `${unit}: ${ms.toFixed(0)} ms`);
+    }
+  });
+  it("finds <use href>, formaction and <link href> outside loads; <a href> outside is advice", () => {
+    assert.ok(codes('<svg><use href="https://evil.example/s.svg#a"/></svg>').includes("error:external_resource"));
+    assert.ok(codes('<button formaction="https://evil.example/x">x</button>').includes("error:external_resource"));
+    assert.ok(codes('<a href="https://example.com">x</a>').includes("advice:outside_link"));
+    assert.deepEqual(lintErrors(lintHtml('<a href="https://example.com">x</a>')), []);
+  });
+});
