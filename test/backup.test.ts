@@ -44,6 +44,8 @@ describe("backup and restore round trip (real SDK)", () => {
   let holdId = "";
   let beforeDump: Record<string, string[]>;
   let archive = "";
+  let shareInput: Record<string, any> = {};
+  let holdBefore: { status: string; view: string | null; summary: string } = { status: "", view: null, summary: "" };
   let exportFile = "";
   before(async () => {
     mkdirSync(backupDir, { recursive: true });
@@ -62,9 +64,12 @@ describe("backup and restore round trip (real SDK)", () => {
     // another agent asks for a link with a stale page: a hold that starts "Do not approve" and a flagged input
     const stale = (await a.call("artifact_get", { id }, { held: [], agent: a.w.agent2 })).body.output.shareExpect;
     assert.equal((await a.call("artifact_update", { id, title: "Renamed" }, { held: [], key: "idem-bk-rename" })).status, 200);
-    const held = await a.call("artifact_share", { id, expect: stale, label: "Stranger" }, { held: ["public_link"], key: "idem-bk-share", agent: a.w.agent2 });
+    shareInput = { id, expect: stale, label: "Stranger" };
+    const held = await a.call("artifact_share", shareInput, { held: ["public_link"], key: "idem-bk-share", agent: a.w.agent2 });
     assert.equal(held.status, 202, JSON.stringify(held.body));
     holdId = String(held.body.holdId);
+    await a.approve(holdId);
+    // the owner approved a hold that said "Do not approve": the backup holds an APPROVED flagged hold
     const made = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 2 }, { key: "idem-bk-link" });
     assert.equal(made.status, 200, JSON.stringify(made.body));
     token = String((made.body.output as { url: string }).url.split("/").pop());
@@ -75,11 +80,15 @@ describe("backup and restore round trip (real SDK)", () => {
     assert.equal(Number((flagged.prepare("SELECT COUNT(*) AS c FROM la_hold_flag").get() as { c: number }).c), 1, "a hold flag exists to carry over");
     flagged.close();
     beforeDump = dump(join(dirA, "app.db"));
+    holdBefore = a.hold(holdId);
     const run = await a.running.backups.runNow();
     archive = basename(run.file);
     const exp = await a.running.backups.exportNow();
     exportFile = basename(exp.file);
     for await (const _chunk of exp.stream as unknown as AsyncIterable<unknown>) void _chunk; // drain
+    // AFTER the backup the owner revokes the link: a restore from this backup would bring it back to life
+    assert.equal((await owner.op("link_revoke", { linkId })).status, 200);
+    assert.equal((await a.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 404, "revoked in A");
     await a.stop();
   });
   after(async () => {
@@ -142,19 +151,37 @@ describe("backup and restore round trip (real SDK)", () => {
     assert.ok(link && /^[0-9a-f]{64}$|^sha256:|^[A-Za-z0-9_-]{20,}$/.test(String(link.token_digest)), "a digest is stored");
   });
 
-  it("restoring into a fresh deployment brings back every la_ table row for row, and the link opens", async () => {
+  it("restoring into a fresh deployment brings back every la_ table row for row, except that every link is ended (a link revoked after the backup stays dead)", async () => {
     b = await boot(VIEWS, { dir: dirB, keepDir: true, world: a.w, env: { TB_BACKUP_DIR: backupDir, TB_KEK: KEK, TB_RESTORE_FROM: archive } });
     const after = dump(join(dirB, "app.db"));
     assert.deepEqual(Object.keys(after).sort(), Object.keys(beforeDump).sort());
-    for (const t of Object.keys(beforeDump)) assert.deepEqual(after[t], beforeDump[t], `table ${t} differs after restore`);
+    const noRevoked = (rows: string[] | undefined): string[] => (rows ?? []).map((r) => JSON.stringify({ ...(JSON.parse(r) as object), revoked_at: null })).sort();
+    for (const t of Object.keys(beforeDump)) {
+      if (t === "la_link") assert.deepEqual(noRevoked(after[t]), noRevoked(beforeDump[t]), "the links are the same rows, apart from revoked_at");
+      else if (t === "la_activity") for (const r of beforeDump[t] ?? []) assert.ok(after[t]?.includes(r), "every activity row is kept");
+      else assert.deepEqual(after[t], beforeDump[t], `table ${t} differs after restore`);
+    }
+    for (const r of after.la_link ?? []) assert.notEqual((JSON.parse(r) as { revoked_at: unknown }).revoked_at, null, "every link is ended after a restore");
+    assert.ok((after.la_activity ?? []).some((r) => /ended because the data was restored/.test(r)), "the page's activity says why");
     for (const t of ["la_artifact", "la_version", "la_snapshot", "la_source", "la_link", "la_view_day", "la_hold_flag"]) assert.ok((beforeDump[t] ?? []).length > 0, `${t} had rows to carry`);
-    // the page, its versions and the pinned link work after the restore
-    assert.equal((await b.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 200, "the restored link opens");
-    const data = (await (await b.viewer(`/v/live-artifacts/${token}/data`)).json()) as { sources: Record<string, { data?: unknown }>; title: string };
+    // the link was revoked AFTER the backup: in the restored database it looked active; it must stay dead
+    assert.equal((await b.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 404, "the link revoked after the backup does not come back");
+    assert.equal((await b.viewer(`/v/live-artifacts/${token}/data`)).status, 404);
+    // the page, its versions and its data came back; the owner makes a new link
+    const owner = await b.person();
+    const fresh = await owner.op("link_create", { id: String((JSON.parse(after.la_artifact?.[0] ?? "{}") as { id: string }).id), label: "After restore" }, { key: "idem-bk-after-restore" });
+    assert.equal(fresh.status, 200, JSON.stringify(fresh.body));
+    const newToken = String((fresh.body.output as { url: string }).url.split("/").pop());
+    const data = (await (await b.viewer(`/v/live-artifacts/${newToken}/data`)).json()) as { sources: Record<string, { data?: unknown }>; title: string };
     assert.deepEqual(data.sources.n?.data, { total: 42 }, "pushed data came back");
     assert.equal(data.title, "Renamed");
+    // the hold that said "Do not approve" and was approved is still flagged: the call never runs
+    const retry = await b.call("artifact_share", shareInput, { held: ["public_link"], key: "idem-bk-share", agent: b.w.agent2 });
+    assert.equal(retry.status, 409, JSON.stringify(retry.body));
+    assert.equal(retry.body.error.code, "page_changed");
+    assert.equal(b.links().filter((l) => l.label === "Stranger").length, 0, "the stranger's link was never made");
     const hold = b.hold(holdId);
-    assert.equal(hold.status, "held", "the pending hold came back");
-    assert.equal((hold.view ?? "").split("\n")[0], "Do not approve: this is not the page as it is now.", "…with its warning");
+    assert.equal(holdBefore.status, "approved", "in the backup the flagged hold was approved");
+    assert.ok(["approved", "failed"].includes(hold.status), `the hold came back (${hold.status}); it never ran: no link below`);
   });
 });

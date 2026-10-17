@@ -16,7 +16,15 @@ It is the threat model of record for the app (the longer design is internal).
   content; on any other element, such as a link, a form, `body` or `td`, only the attribute goes and the content stays), and every
   CSS `url()`, `@import` and `image-set()` that is not `data:` or relative (the `url()` becomes `url("data:,")`). If the parser fails, the page is too large or too deeply nested,
   or the sanitized output does not pass a second parse, the fixed "This page cannot be shown" document is served.
-- A page WITHOUT script therefore makes no network request by static markup (proved in real Chrome by `test/browser/canary.test.ts`).
+- A page WITHOUT script therefore makes no network request by static markup (checked by `test/browser/canary.test.ts` with Chrome on a developer machine; it is not a CI gate).
+
+## After a restore
+
+A restore replaces the database with an older copy. A link revoked after that backup would be active again in it, and the app cannot
+know which. So the SDK `afterRestore` hook marks the boot, no link opens until the app has recorded the restore, and then **every
+viewer link is ended and every preview deleted** (each page's activity says why). Pages, versions, data, sources and hold flags
+stay as restored; an approved hold that was flagged "Do not approve" is still refused. The owner makes new links. This is tested
+with a real backup and restore (`test/backup.test.ts`: a link revoked after the backup stays dead).
 
 ## Known limits (accepted)
 

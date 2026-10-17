@@ -4,7 +4,7 @@ import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { createPreview, docTicket, documentCsp, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
+import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, isRestorePending, markRestored, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -149,6 +149,32 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
     const html = await r.text();
     assert.ok(html.startsWith("<!DOCTYPE html><script>"), "the helper is the first script, right after the doctype");
     assert.ok(html.endsWith("<body>v1</body></html>"));
+  });
+});
+
+describe("after a restore every link is ended (S6 review S3-3)", () => {
+  it("until the app recorded the restore no link opens; then every link and preview is ended once, with a note on the page", async () => {
+    const id = await page();
+    const a1 = link(id);
+    const a2 = link(id);
+    const prev = link(id, { kind: "preview" });
+    const gone = link(id, { revoked: true });
+    assert.equal(get(`/v/live-artifacts/${a1}`).status, 200);
+    markRestored();
+    try {
+      assert.ok(isRestorePending());
+      for (const t of [a1, a2, prev, gone]) assert.equal(get(`/v/live-artifacts/${t}`).status, 404, "nothing opens while the restore is pending");
+      assert.equal(endLinksAfterRestore(db, now), 2, "two active viewer links were ended");
+    } finally {
+      assert.ok(!isRestorePending());
+    }
+    for (const t of [a1, a2, prev, gone]) assert.equal(get(`/v/live-artifacts/${t}`).status, 404);
+    assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'preview'").get()?.c), 0);
+    assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL").get()?.c), 0);
+    assert.match(String(db.prepare("SELECT summary FROM la_activity WHERE artifact_id = ? AND by_id = 'restore'").get(id)?.summary), /2 link\(s\) ended because the data was restored/);
+    assert.equal(endLinksAfterRestore(db, now), 0, "nothing more to end");
+    // a link made after the restore works
+    assert.equal(get(`/v/live-artifacts/${link(id)}`).status, 200);
   });
 });
 

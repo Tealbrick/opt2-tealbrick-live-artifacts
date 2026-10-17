@@ -92,7 +92,7 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
-import { createPreview, ensureDocKey, handleViewer, httpsOrigin, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
+import { createPreview, endLinksAfterRestore, ensureDocKey, handleViewer, httpsOrigin, isRestorePending, markRestored, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
 
 /** The viewer address of the bridge (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). The SDK's requireViewUrl answers 409
  *  view_origin_missing while there is none; it checks only that the string is not empty, so the https host check stays here
@@ -770,6 +770,12 @@ export const definition: SdkAppDefinition = {
   handlers,
   migrations: migrationsDir,
   publicRoutes: { "/v": viewerRoute },
+  // a restore replaces the database with an older one; every link is ended after it (viewer.ts endLinksAfterRestore)
+  backup: {
+    async afterRestore() {
+      markRestored();
+    },
+  },
   jobs: { [REFRESH_JOB]: { run: refreshTick as never, maxAttempts: 3, leaseMs: 120_000, timeoutMs: 5 * 60_000 } },
   // the page needs the owner when a refresh stopped after repeated failures (L3: a stop is never silent)
   // An app attention() replaces the SDK's jobs_failed/jobs_stuck default, so this one covers both: pages that stopped after
@@ -788,6 +794,7 @@ export const definition: SdkAppDefinition = {
   },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
+    if (isRestorePending()) endLinksAfterRestore(ctx.db, clock()); // the data was restored from a backup (S3-3)
     await ensureDocKey(ctx.secrets); // the document-ticket key: created once, kept sealed in the SDK's secret store
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
   },

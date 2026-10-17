@@ -139,12 +139,44 @@ export interface LinkRow {
   kind: "viewer" | "preview";
   pinVersion: number | null;
 }
+// ─────────────────────────────────────────────────────────── restore (S6 review S3-3)
+
+/** A restore replaced the database with an older one: a link revoked after that backup is active again in it, and the app cannot
+ *  know which. So every link is ended after a restore and the owner makes new ones. `afterRestore` (SDK backup hook) sets this
+ *  flag in the same process, before the store opens; until `endLinksAfterRestore` ran no link opens. */
+let restorePending = false;
+export function markRestored(): void {
+  restorePending = true;
+}
+export const isRestorePending = (): boolean => restorePending;
+
+/** End every link and every preview after a restore, once. Pages, versions, data and hold flags are kept as restored. */
+export function endLinksAfterRestore(db: Db, now: number): number {
+  const ended = db.transaction(() => {
+    const rows = db.prepare("SELECT artifact_id, COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL AND expires_at > ? GROUP BY artifact_id").all(now);
+    db.prepare("UPDATE la_link SET revoked_at = ? WHERE kind = 'viewer' AND revoked_at IS NULL AND expires_at > ?").run(now, now);
+    db.prepare("DELETE FROM la_link WHERE kind = 'preview'").run();
+    for (const r of rows) {
+      db.prepare("INSERT INTO la_activity (id, artifact_id, at, action, by_type, by_id, by_name, summary) VALUES (?, ?, ?, 'link.revoke', 'app', 'restore', 'Restore', ?)").run(
+        `act_${ulid(now)}`,
+        String(r.artifact_id),
+        now,
+        `${Number(r.c)} link(s) ended because the data was restored from a backup; create new links`,
+      );
+    }
+    return rows.reduce((n, r) => n + Number(r.c), 0);
+  });
+  restorePending = false;
+  return ended;
+}
+
 /** Resolve a token to a usable link, or null (unknown, expired, revoked, artifact gone or archived). */
 export function resolveToken(db: Db, token: string, now: number): LinkRow | null {
   if (!TOKEN_RE.test(token)) return null;
   return usableLink(db.prepare("SELECT * FROM la_link WHERE token_digest = ?").get(opaqueDigest(token)), db, now);
 }
 function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number): LinkRow | null {
+  if (restorePending) return null; // a restore ended every link; the app is about to record that
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;
