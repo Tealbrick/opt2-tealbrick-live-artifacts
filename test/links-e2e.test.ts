@@ -47,7 +47,7 @@ interface Booted {
   stop(): Promise<void>;
 }
 
-async function boot(viewUrl: string | null, opts: { paused?: boolean } = {}): Promise<Booted> {
+async function boot(viewUrl: string | null, opts: { paused?: boolean; pausedAgent?: boolean } = {}): Promise<Booted> {
   const [root, portal, bridgeKey] = await Promise.all([generateKeyPair(), generateKeyPair(), generateKeyPair()]);
   const keySet = await signKeySetStatement({ iss: "tb:portal-root", aud: "tb:portal-keys", seq: 1, iat: nowS(), keys: [{ jwk: portal.publicJwk, status: "active" }] }, root);
   const w: World = { root, portal, bridgeKey, keySet, ws: `ws_${ulid()}`, brg: `brg_${ulid()}`, ins: `ins_${ulid()}`, per: `per_${ulid()}`, agent: `agt_${ulid()}`, agent2: `agt_${ulid()}` };
@@ -65,7 +65,7 @@ async function boot(viewUrl: string | null, opts: { paused?: boolean } = {}): Pr
       product: "live-artifacts",
       portalKeys: [{ jwk: portal.publicJwk, status: "active" }],
       bridge: { id: w.brg, keys: [bridgeKey.publicJwk], publicUrl: "https://bridge-e2e.up.railway.app", ...(viewUrl ? { viewUrl } : {}) },
-      pause: { workspace: opts.paused === true, agents: [], instances: [] },
+      pause: { workspace: opts.paused === true, agents: opts.pausedAgent ? [w.agent] : [], instances: [] },
       revoked: { jtis: [] },
       personNbf: 0,
       grants: [],
@@ -370,21 +370,13 @@ describe("what the approval is bound to, on the real SDK", () => {
   after(async () => {
     await b?.stop();
   });
-  const countHolds = (): number => {
-    const db = new DatabaseSync(join(b.dir, "app.db"), { readOnly: true });
-    try {
-      return Number((db.prepare("SELECT COUNT(*) AS c FROM tb_receipts WHERE status = 'held'").get() as { c: number }).c);
-    } finally {
-      db.close();
-    }
-  };
   const create = async (title: string, key: string, gallery?: string): Promise<string> => {
     const r = await b.call("artifact_create", { ...PAGE, title, ...(gallery ? { gallery } : {}), contract: { v: 1, inputs: [{ key: "n", kind: "push", label: "Numbers" }] } }, { held: [], key });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     return String(r.body.output.id);
   };
 
-  it("pushed data is bound: put A, build expect, put B → 409 page_changed before any hold, and no link (S4 review F1, F3)", async () => {
+  it("pushed data is bound: put A, build expect, put B → the hold says Do not approve; approved anyway, the run is 409 page_changed and no link (S4 review F1, F3)", async () => {
     const id = await create("Data page", "idem-key-data-1");
     const owner = await b.person();
     const sources = await b.call("artifact_get", { id, include: ["sources"] }, { held: [] });
@@ -394,11 +386,15 @@ describe("what the approval is bound to, on the real SDK", () => {
     const e = await looked(b, id);
     assert.deepEqual(e.data, [{ key: "n", sha256: a.body.output.digest }]);
     await b.call("artifact_data_put", { id, key: "n", data: { total: 999 } }, { held: [], key: "idem-key-put-b" });
-    const holdsBefore = countHolds();
-    const r = await b.call("artifact_share", { id, expect: e }, { held: ["public_link"], key: "idem-key-data-share" });
+    const input = { id, expect: e };
+    const held = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-data-share" });
+    assert.equal(held.status, 202, JSON.stringify(held.body));
+    assert.equal((b.hold(String(held.body.holdId)).view ?? "").split("\n")[0], "Do not approve: this is not the page as it is now.");
+    assert.match(b.hold(String(held.body.holdId)).view ?? "", /differs in: pushed data/);
+    await b.approve(String(held.body.holdId));
+    const r = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-data-share" });
     assert.equal(r.status, 409, JSON.stringify(r.body));
     assert.equal(r.body.error.code, "page_changed");
-    assert.equal(countHolds(), holdsBefore, "refused before the hold: no hold appeared");
     assert.equal(b.links().length, 0);
   });
 
@@ -409,7 +405,7 @@ describe("what the approval is bound to, on the real SDK", () => {
     assert.equal((await rename("Renamed", "idem-key-rename-1")).status, 200);
     const input = { id, expect: stale, label: "Stranger" };
     const held = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-stranger-1", agent: b.w.agent2 });
-    assert.equal(held.status, 202, "no early refusal for a caller that did not make the page (it must not learn about pages)");
+    assert.equal(held.status, 202, "no early refusal for anybody: the SDK checks access and pause first");
     const view = b.hold(String(held.body.holdId)).view ?? "";
     assert.equal(view.split("\n")[0], "Do not approve: this is not the page as it is now.");
     await b.approve(String(held.body.holdId));
@@ -473,6 +469,30 @@ describe("review blockers: a hold that cannot be flagged, and a creator that los
     }
   });
 
+  it("the owner removed the agent's access to its OWN gallery: scope_denied, identical to an unknown page, for artifact_share and artifact_publish", async () => {
+    const id = String((await b.call("artifact_create", { ...PAGE, title: "Own gallery page" }, { held: [], key: "idem-key-own-1" })).body.output.id);
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const owner = await b.person();
+    const set = (access: string | null) => owner.op("tb.scopes_set", { agent: b.w.agent, type: "gallery", id: b.w.agent, access });
+    assert.equal((await set(null)).status, 200);
+    try {
+      const unknownId = "art_01J0000000000000000000ZZZZ";
+      for (const [op, mk] of [
+        ["artifact_share", (pid: string) => ({ id: pid, expect: guess })],
+        ["artifact_publish", (pid: string) => ({ id: pid, version: 1, expect: { htmlSha256: "sha256:00" } })],
+      ] as const) {
+        const real = await b.call(op, mk(id), { held: ["public_link"], key: `idem-key-own-${op}-1` });
+        const unknown = await b.call(op, mk(unknownId), { held: ["public_link"], key: `idem-key-own-${op}-2` });
+        assert.equal(real.status, 403, `${op}: ${JSON.stringify(real.body)}`);
+        assert.equal(real.body.error.code, "scope_denied");
+        assert.deepEqual([real.status, real.body.error.code, real.body.error.message], [unknown.status, unknown.body.error.code, unknown.body.error.message], op);
+      }
+    } finally {
+      await set("manage");
+    }
+    assert.equal(b.links().length, 0);
+  });
+
   it("a creator whose scope was revoked learns nothing from a guessed expect: the same answer and code as for an unknown page", async () => {
     const id = await create("Creator page", "idem-key-scope-1", b.w.agent2);
     const owner = await b.person();
@@ -488,6 +508,32 @@ describe("review blockers: a hold that cannot be flagged, and a creator that los
     assert.equal(pub.body.error.code, "scope_denied");
     // restore the access (the owner can give it back)
     await owner.op("tb.scopes_set", { agent: b.w.agent2, type: "gallery", id: "shared", access: "contribute" });
+    assert.equal(b.links().length, 0);
+  });
+});
+
+describe("a paused agent (real SDK)", () => {
+  let b: Booted;
+  before(async () => {
+    b = await boot(VIEWS, { pausedAgent: true });
+  });
+  after(async () => {
+    await b?.stop();
+  });
+  it("gets the paused answer, never page_changed, whatever it guesses: same code for a real and an unknown page", async () => {
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const answers: [number, string][] = [];
+    for (const [op, input] of [
+      ["artifact_share", { id: "art_01J0000000000000000000ZZZZ", expect: guess }],
+      ["artifact_publish", { id: "art_01J0000000000000000000ZZZZ", version: 1, expect: { htmlSha256: "sha256:00" } }],
+    ] as const) {
+      const r = await b.call(op, input, { held: ["public_link"], key: `idem-key-paused-${op}` });
+      assert.ok(r.status >= 400 && r.status !== 409, `${op}: ${JSON.stringify(r.body)}`);
+      assert.notEqual(r.body.error.code, "page_changed");
+      answers.push([r.status, r.body.error.code]);
+    }
+    assert.match(answers[0]?.[1] ?? "", /paused/, "the paused answer");
+    assert.deepEqual(answers[0], answers[1]);
     assert.equal(b.links().length, 0);
   });
 });

@@ -77,7 +77,6 @@ import {
   linksOf,
   listArtifacts,
   notFound,
-  pageChanged,
   publishVersion,
   pushedDataOf,
   putData,
@@ -245,18 +244,12 @@ const sayArtifact = (i: { id: string }) => `page ${i.id}`;
 /** Receipt text for a link op: the page title, never an address or a token. */
 const titleOf = (id: string): string => String((scopeDb ? artifactRow(scopeDb, id)?.title : undefined) ?? id).slice(0, 80);
 
-/** S4 review F3: a link request that is not the page as it is now is refused BEFORE a hold exists, where the page is in the
- *  caller's OWN gallery (gallery id = caller id). The scope resolver runs before the scope check and the hold decision, so
- *  it must reveal nothing to a caller that has no right to the page. Only the owner of a gallery has one for sure: a
- *  creator whose access was withdrawn, or any other caller, goes on to the scope check (scope_denied, the same answer as
- *  for a page that does not exist) and, if it passes, to a hold that starts with "Do not approve" and whose input is
- *  flagged, so even an approval of it is refused when it runs. */
-function refuseBeforeHold(id: string, caller: { id: string }, diff: () => string[]): void {
-  const r = scopeDb ? artifactRow(scopeDb, id) : undefined;
-  if (!r || String(r.gallery_id) !== caller.id) return;
-  const d = diff();
-  if (d.length > 0) throw pageChanged(`the page (${d.join(", ")})`);
-}
+/** S4 review F3 (final): a link request that is not the page as it is now gets NO early refusal for anybody. The SDK
+ *  resolves the scope (`scope()`), then decides pause, grant, scope access and the hold (`authorize`), and only then runs the
+ *  handler; a refusal inside `scope()` would come before the access check and the pause check and would tell a caller that
+ *  lost its access, or a paused agent, whether a page exists and what it looks like. So the request goes through the SDK
+ *  checks first (scope_denied, paused: the same answers as for an unknown page), and if it passes it becomes a hold that
+ *  starts with "Do not approve" and whose input is flagged, so even an approval of it is refused when it runs. */
 /** Render side of F3: remember an input whose hold was rendered on a mismatch. A write that fails is NOT swallowed: the
  *  hold view throws, the SDK creates no hold (the call fails with an internal error), so a hold that cannot be flagged
  *  can never be approved. */
@@ -445,10 +438,7 @@ export const handlers = {
     },
   }),
   [OP.artifactShare]: op<ArtifactShareInput, unknown>({
-    scope: (i, caller) => {
-      refuseBeforeHold(i.id, caller, () => shareMismatch(scopeDb as Db, i.id, i.pin, i.expect));
-      return galleryOfArtifact(i.id);
-    },
+    scope: (i) => galleryOfArtifact(i.id),
     redact: (i) => `share page "${titleOf(i.id)}" with a link`,
     holdView: (i) => {
       if (!scopeDb) return `Create a public link to the live page ${i.id}.`;
@@ -469,10 +459,7 @@ export const handlers = {
     },
   }),
   [OP.artifactPublish]: op<ArtifactPublishInput, unknown>({
-    scope: (i, caller) => {
-      refuseBeforeHold(i.id, caller, () => publishMismatch(scopeDb as Db, i));
-      return galleryOfArtifact(i.id);
-    },
+    scope: (i) => galleryOfArtifact(i.id),
     redact: (i) => `page "${titleOf(i.id)}": version ${i.version} live${i.data?.length ? `, data ${i.data.map((d) => d.key).join(", ")}` : ""}`,
     holdView: (i) => {
       if (!scopeDb) return `Change what the people who hold a link to ${i.id} see.`;

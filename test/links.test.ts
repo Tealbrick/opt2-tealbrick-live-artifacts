@@ -217,17 +217,16 @@ describe("what the approval is bound to: pushed data, the source list, and a hol
     const text = shareHoldText(db, { id }, now);
     assert.match(text, /"Numbers\\" \(data pushed by an agent\); \\"Ghost" \(data pushed by an agent\)/);
   });
-  it("F3: a mismatch is refused BEFORE a hold exists only in the caller's OWN gallery (the scope resolver throws)", async () => {
+  it("F3: the scope resolver says nothing about the page for anybody: wrong or right expect, own gallery or not, the answer is the gallery", async () => {
     const id = await page();
     const stale = seen(id);
     await run("artifact_update", { id, title: "Renamed" }, agent());
-    const input = { id, expect: stale };
-    assert.throws(() => handlers.artifact_share.scope?.(input as never, AGENT_A as never), PAGE_CHANGED);
-    assert.throws(() => handlers.artifact_publish.scope?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never, AGENT_A as never), PAGE_CHANGED);
-    // quiet: the page as it is now passes the resolver and names the gallery
+    // a mismatching request is not refused in the resolver (that would come before the access and pause checks of the SDK)
+    assert.equal(handlers.artifact_share.scope?.({ id, expect: stale } as never, AGENT_A as never), AGENT_A.id);
+    assert.equal(handlers.artifact_share.scope?.({ id, expect: { ...stale, sourcesSha256: "sha256:guess" } } as never, AGENT_B as never), AGENT_A.id);
+    assert.equal(handlers.artifact_publish.scope?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never, AGENT_A as never), AGENT_A.id);
     assert.equal(handlers.artifact_share.scope?.({ id, expect: seen(id) } as never, AGENT_A as never), AGENT_A.id);
-    // another caller must not learn anything about a page it may not reach: no page_changed, the normal scope answer
-    assert.equal(handlers.artifact_share.scope?.(input as never, AGENT_B as never), AGENT_A.id);
+    // an unknown page maps to the gallery nobody holds, so the SDK answers scope_denied for it exactly as for a page the caller may not reach
     assert.equal(handlers.artifact_share.scope?.({ id: "art_01J0000000000000000000ZZZZ", expect: stale } as never, AGENT_A as never), "#missing");
   });
   it("F3: the page's creator is no exception: in a gallery that is not its own the resolver says nothing about the page", async () => {
@@ -235,13 +234,10 @@ describe("what the approval is bound to: pushed data, the source list, and a hol
     const id = String((await run("artifact_create", { gallery: "shared", title: "Team page", view: { html: "<p>x</p>" } }, mine)).id);
     const stale = seen(id);
     await run("artifact_update", { id, title: "Renamed" }, mine);
-    assert.equal(db.prepare("SELECT created_by_id FROM la_artifact WHERE id = ?").get(id)?.created_by_id, AGENT_A.id);
-    // wrong expect, right creator, not its gallery: the same resolver answer as a right expect (the gallery id)
     assert.equal(handlers.artifact_share.scope?.({ id, expect: stale } as never, AGENT_A as never), "shared");
-    assert.equal(handlers.artifact_share.scope?.({ id, expect: { ...stale, sourcesSha256: "sha256:guess" } } as never, AGENT_A as never), "shared");
     assert.equal(handlers.artifact_publish.scope?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never, AGENT_A as never), "shared");
   });
-  it("F3: where it cannot refuse early, the hold says 'Do not approve' and an approval of it never runs, even if the page matches later", async () => {
+  it("F3: a request that is not the page as it is now becomes a hold that says 'Do not approve' and an approval of it never runs, even if the page matches later", async () => {
     const id = await page();
     const stranger = ctxFor(db, AGENT_B, { [AGENT_A.id]: CRUD.contribute }, instances, {}, { grant: grantHolding("public_link"), viewUrl: VIEWS });
     const expect = seen(id);
