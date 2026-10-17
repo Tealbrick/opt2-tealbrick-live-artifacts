@@ -714,6 +714,18 @@ describe("Review and share: step 3", () => {
     assert.equal(callsOf("link_create").length, 1, "Done sends nothing");
     await m.unmount();
   });
+  it("a page that runs scripts: Create link sends acknowledged: true (the server asks for it); a page without scripts sends none", async () => {
+    reset();
+    viewerReady();
+    stub.out.link_create = MADE;
+    stub.out.artifact_detail = { ...DETAIL, runsScripts: true };
+    const m = await mountPage();
+    const dialog = await toStep3(m);
+    await click(field(dialog, "Create link"));
+    await flush();
+    assert.deepEqual(callsOf("link_create").map((c) => c.input), [{ id: "art_weekly", acknowledged: true, expiresInDays: 7 }]);
+    await m.unmount();
+  });
   it("a page that runs scripts: step 3 shows the exact sentence the owner approves", async () => {
     reset();
     viewerReady();

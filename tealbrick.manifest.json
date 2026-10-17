@@ -3734,6 +3734,10 @@
               }
             ],
             "description": "A version number to show on this link for its whole life, or null (default) to follow the live version."
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "description": "Required (true) when the page runs scripts: the owner has read \"This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites.\" Without it the call is refused with scripts_not_acknowledged."
           }
         }
       },

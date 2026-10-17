@@ -43,8 +43,9 @@ export function useDefaultDays(): number {
 }
 
 /** The call input of a form. Lifetime is always sent, so what the owner saw is what the link gets. */
-export const formInput = (id: string, f: LinkForm, defaultDays: number) => ({
+export const formInput = (id: string, f: LinkForm, defaultDays: number, acknowledged = false) => ({
   id,
+  ...(acknowledged ? { acknowledged: true } : {}),
   ...(f.label.trim() ? { label: f.label.trim() } : {}),
   expiresInDays: Number(f.days ?? defaultDays),
   ...(f.pin === "live" ? {} : { pin: Number(f.pin) }),

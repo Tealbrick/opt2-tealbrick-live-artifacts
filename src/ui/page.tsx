@@ -241,7 +241,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
   };
   const makeLink = () =>
     change(async () => {
-      const out = await run("link_create", formInput(id, form, defaultDays));
+      const out = await run("link_create", formInput(id, form, defaultDays, detail.runsScripts === true));
       setCreated({ url: out.url, expiresAt: out.expiresAt });
     });
   const revokeLink = (l: Link) =>
@@ -460,7 +460,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
             disabled={busy}
             onCheckedChange={(on) => void change(() => run("autopublish_set", { id, mode: on ? "agent" : "owner" }))}
           />
-          <p className="tb-hint">Off: a new version or new numbers from an agent wait here until you or a held approval make them live.</p>
+          <p className="tb-hint">Off: a new version or new numbers from an agent wait here until you or a held approval make them live. On: an agent can also put a different page that runs scripts under a link that already allows scripts.</p>
         </aside>
       </div>
 

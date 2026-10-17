@@ -635,7 +635,7 @@ export const handlers = {
       // the owner is the approver: no hold, no link_needs_hold (DESIGN §3.2)
       noteViewUrl(ctx);
       const base = viewBase(ctx);
-      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by: actorOf(ctx) }, clock());
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by: actorOf(ctx) }, clock(), { requireScriptsAck: true, acknowledged: i.acknowledged === true });
       ctx.statusChanged();
       return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
     },

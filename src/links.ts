@@ -42,7 +42,7 @@ export interface CreatedLink {
 }
 
 /** Create a viewer link. Checks the page, the pin and the caps in one transaction. */
-export function createLink(db: Db, a: CreateLinkArgs, now: number): CreatedLink {
+export function createLink(db: Db, a: CreateLinkArgs, now: number, opts: { requireScriptsAck?: boolean; acknowledged?: boolean } = {}): CreatedLink {
   const days = a.expiresInDays ?? getSettings(db).defaultLinkDays;
   if (!Number.isInteger(days) || days < 1 || days > LIMITS.maxLinkDays) throw new TbError("link_days_invalid", `a link lasts 1 to ${LIMITS.maxLinkDays} days`, 400);
   return db.transaction(() => {
@@ -66,6 +66,9 @@ export function createLink(db: Db, a: CreateLinkArgs, now: number): CreatedLink 
     // approved for scripts only if the page it shows runs scripts now (an agent link: bound by expect.runsScripts above)
     const shownV = versionRow(db, a.artifactId, pin ?? Number(art.live_version));
     const scriptsOk = shownV !== undefined && versionRunsScripts(shownV) ? 1 : 0;
+    // the owner's own link: a page that runs scripts needs the owner's explicit yes, checked HERE, not only shown in the UI
+    if (scriptsOk === 1 && opts.requireScriptsAck && opts.acknowledged !== true)
+      throw new TbError("scripts_not_acknowledged", `${RUNS_SCRIPTS_SENTENCE} Send acknowledged: true to make the link anyway.`, 409);
     const token = newToken();
     const id = `lnk_${ulid(now)}`;
     const expiresAt = now + days * DAY_MS;
@@ -204,7 +207,10 @@ export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { vi
     else if (pin !== null && pin > live) lines.push(`Version ${pin} is newer than the live version (now version ${live}) and has not been reviewed yet.`);
     else if (pin !== null && pin < live) lines.push(`Version ${pin} is older than the live version (now version ${live}).`);
   }
-  if (String(a.auto_publish) === "agent") lines.push("At the time of this request: later agent changes go live on this link WITHOUT your approval (you allowed that for this page).");
+  if (String(a.auto_publish) === "agent")
+    lines.push(
+      "At the time of this request: later agent changes go live on this link WITHOUT your approval (you allowed that for this page). That includes a different page that runs scripts, once this link allows scripts.",
+    );
   if (e) {
     lines.push(
       diff.length === 0

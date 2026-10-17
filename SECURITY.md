@@ -21,7 +21,8 @@ It is the threat model of record for the app (the longer design is internal).
   no fetch. A link the owner approved for a page without scripts always shows the scriptless render, even if a later version gains
   scripts (`la_link.scripts_ok`). A page that runs scripts needs the owner to approve the sentence "This page runs scripts. In some
   browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites."; the share
-  request is bound to it (`expect.runsScripts`).
+  request is bound to it (`expect.runsScripts`). The owner's own `link_create` for such a page needs `acknowledged: true` on the server too.
+  With autoPublish = agent, an agent can put a different page that runs scripts under a link that already allows scripts.
 - A page WITHOUT script therefore makes no network request by static markup (checked by `test/browser/canary.test.ts` with Chrome on a developer machine; it is not a CI gate).
 
 ## After a restore

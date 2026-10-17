@@ -608,6 +608,23 @@ describe("pages that run scripts (C239)", () => {
     const lc = await run("link_create", { id: c }, owner());
     assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE id = ?").get(lc.linkId)?.scripts_ok), 0);
   });
+  it("the owner's link_create for a page that runs scripts is refused without acknowledged: true (server side); a page without scripts needs none", async () => {
+    const id = await page("Needs ack");
+    setHtml(id, SCRIPTS[0]?.[1] ?? "");
+    for (const input of [{ id }, { id, acknowledged: false }]) {
+      await assert.rejects(run("link_create", input, owner()), (e: { code?: string; httpStatus?: number }) => e.code === "scripts_not_acknowledged" && e.httpStatus === 409);
+    }
+    assert.equal(Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE artifact_id = ?").get(id)?.c), 0);
+    const ok = await run("link_create", { id, acknowledged: true }, owner());
+    assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE id = ?").get(ok.linkId)?.scripts_ok), 1);
+    const free = await page("Free");
+    setHtml(free, FREE);
+    assert.ok((await run("link_create", { id: free }, owner())).linkId, "no yes needed when the page runs no scripts");
+    // a pin on a version that runs scripts counts too (the check follows the version the link shows)
+    const swap = await page("Pinned");
+    setHtml(swap, SCRIPTS[0]?.[1] ?? "");
+    await assert.rejects(run("link_create", { id: swap, pin: 1 }, owner()), (e: { code?: string }) => e.code === "scripts_not_acknowledged");
+  });
   it("approve-then-swap: a page that gains scripts after the approval is refused with page_changed, even when only the scripts fact is stale", async () => {
     const id = await page("Swap");
     setHtml(id, FREE);

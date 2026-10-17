@@ -149,7 +149,15 @@ describe("links on the real SDK (viewer address present)", () => {
     // a page that runs scripts: the SDK gate accepts the allow-scripts sandbox too
     const sid = String((await b.call("artifact_create", { title: "Scripted", view: { html: "<!doctype html><html><body><h1>s</h1><script>tb.ready()</script></body></html>" } }, { held: [], key: "idem-key-scripted-1" })).body.output.id);
     const owner = await b.person();
-    const scripted = String(((await owner.op("link_create", { id: sid }, { key: "own-link-scripted" })).body.output as { url: string }).url.split("/").pop());
+    // the owner's own link for a page that runs scripts needs acknowledged: true, checked on the server
+    for (const [input, key] of [[{ id: sid }, "own-link-noack"], [{ id: sid, acknowledged: false }, "own-link-ack-false"]] as const) {
+      const refused = await owner.op("link_create", input, { key });
+      assert.equal(refused.status, 409, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.code, "scripts_not_acknowledged");
+      assert.match(String(refused.body.error.message), /This page runs scripts\. In some browsers, scripts can contact outside sites/);
+    }
+    assert.equal(b.links().filter((l) => l.artifact_id === sid).length, 0, "no link was made without the yes");
+    const scripted = String(((await owner.op("link_create", { id: sid, acknowledged: true }, { key: "own-link-scripted" })).body.output as { url: string }).url.split("/").pop());
     const sdata = (await (await b.viewer(`/v/live-artifacts/${scripted}/data`)).json()) as Record<string, any>;
     const sdoc = await b.viewer(`/v/live-artifacts/${sdata.doc}`, { "sec-fetch-dest": "iframe" });
     assert.equal(sdoc.status, 200);

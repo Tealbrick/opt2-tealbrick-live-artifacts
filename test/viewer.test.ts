@@ -4,7 +4,7 @@ import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { SANITIZER_VERSION } from "../src/sanitize.ts";
+import { BIND_MAX_TOTAL_BYTES, bindData, SANITIZER_VERSION } from "../src/sanitize.ts";
 import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, restoreUnhandled, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
@@ -200,6 +200,24 @@ describe("scriptless render (C239)", () => {
     const d2 = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
     assert.notEqual(d2.docRev, before, "the shell reloads the frame when the inlined data changes");
     assert.match(await get(await docPath(tok)).text(), /<b data-tb-text="n\.total">43<\/b>/);
+  });
+  it("the inlined data of one response is capped at 256 KiB: a visible marker once, nothing after it", async () => {
+    const id = await page();
+    setHtml(id, `<!doctype html><html><body>${'<p data-tb-text="n.big">?</p>'.repeat(300)}</body></html>`);
+    db.prepare("UPDATE la_source SET approved_digest = digest, viewers = 1 WHERE artifact_id = ? AND key = 'n'").run(id);
+    db.prepare("INSERT OR REPLACE INTO la_snapshot (artifact_id, key, data_json, bytes, status, fetched_at) VALUES (?, 'n', ?, 10, 'ok', ?)").run(id, JSON.stringify({ big: "x".repeat(1900) }), now);
+    const html = await get(await docPath(link(id))).text();
+    const inlined = (html.match(/x{1900}/g) ?? []).length;
+    assert.ok(inlined * 1900 <= BIND_MAX_TOTAL_BYTES && inlined >= 100, `${inlined} values inlined`);
+    assert.equal((html.match(/\[data cut: too much for one page\]/g) ?? []).length, 1, "one visible marker");
+    assert.ok(html.length < BIND_MAX_TOTAL_BYTES + 64 * 1024, `${html.length} bytes served`);
+  });
+  it("bindData runs the whole-source limits before it parses: an old stored row with a bomb is served unbound, fast", async () => {
+    const bomb = `<!doctype html><p data-tb-text="n.total">?</p><a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`;
+    const t = performance.now();
+    const out = bindData(bomb, { n: { total: 1 } });
+    assert.equal(out, bomb, "returned unbound");
+    assert.ok(performance.now() - t < 100, `${(performance.now() - t).toFixed(0)} ms`);
   });
   it("data never goes into a raw-text element, and a page that binds nothing has no docRev", async () => {
     const { tok } = await dataPage('<!doctype html><html><head><style data-tb-text="n.total">a{color:red}</style></head><body><p data-tb-text="n.total">?</p></body></html>');

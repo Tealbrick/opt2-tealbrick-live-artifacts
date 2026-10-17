@@ -751,6 +751,9 @@ export const BIND_ATTR = "data-tb-text";
 /** Elements whose text the serializer does not escape (raw text): data never goes into them. */
 const RAW_TEXT_ELEMENTS = new Set(["style", "script", "xmp", "iframe", "noembed", "noframes", "plaintext", "noscript"]);
 const BIND_MAX_CHARS = 2000;
+/** All inlined data of one response, bytes. Past it a value is replaced by BIND_CUT_MARKER (once) and later ones by nothing. */
+export const BIND_MAX_TOTAL_BYTES = 256 * 1024;
+export const BIND_CUT_MARKER = "[data cut: too much for one page]";
 
 function lookup(values: Record<string, unknown>, path: string): unknown {
   let cur: unknown = values;
@@ -775,7 +778,10 @@ export const bindsData = (html: string): boolean => html.includes(BIND_ATTR);
 export function bindData(html: string, values: Record<string, unknown>): string {
   if (!bindsData(html)) return html;
   try {
+    precheck(html); // the same whole-source limits as the first sanitize, BEFORE parse5 reads it again (an old stored row)
     const doc = parseBounded(html);
+    let budget = BIND_MAX_TOTAL_BYTES;
+    let cutShown = false;
     const stack: Parent[] = [doc];
     while (stack.length > 0) {
       const parent = stack.pop() as Parent;
@@ -785,7 +791,15 @@ export function bindData(html: string, values: Record<string, unknown>): string 
         const path = el.attrs?.find((a) => a.name === BIND_ATTR)?.value;
         if (path !== undefined && !RAW_TEXT_ELEMENTS.has(el.tagName.toLowerCase())) {
           el.childNodes = [];
-          defaultTreeAdapter.insertText(el, textOfValue(lookup(values, path.trim())));
+          let text = textOfValue(lookup(values, path.trim()));
+          const bytes = Buffer.byteLength(text, "utf8");
+          if (bytes > budget) {
+            // the response has all the inlined data it may carry: cut, with one visible marker, and nothing more after it
+            text = cutShown ? "" : BIND_CUT_MARKER;
+            cutShown = true;
+            budget = 0;
+          } else budget -= bytes;
+          defaultTreeAdapter.insertText(el, text);
           continue;
         }
         stack.push(el);
