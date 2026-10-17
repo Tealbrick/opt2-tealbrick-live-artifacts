@@ -217,7 +217,7 @@ describe("what the approval is bound to: pushed data, the source list, and a hol
     const text = shareHoldText(db, { id }, now);
     assert.match(text, /"Numbers\\" \(data pushed by an agent\); \\"Ghost" \(data pushed by an agent\)/);
   });
-  it("F3: a mismatch is refused BEFORE a hold exists when the caller owns or made the page (the scope resolver throws)", async () => {
+  it("F3: a mismatch is refused BEFORE a hold exists only in the caller's OWN gallery (the scope resolver throws)", async () => {
     const id = await page();
     const stale = seen(id);
     await run("artifact_update", { id, title: "Renamed" }, agent());
@@ -229,6 +229,17 @@ describe("what the approval is bound to: pushed data, the source list, and a hol
     // another caller must not learn anything about a page it may not reach: no page_changed, the normal scope answer
     assert.equal(handlers.artifact_share.scope?.(input as never, AGENT_B as never), AGENT_A.id);
     assert.equal(handlers.artifact_share.scope?.({ id: "art_01J0000000000000000000ZZZZ", expect: stale } as never, AGENT_A as never), "#missing");
+  });
+  it("F3: the page's creator is no exception: in a gallery that is not its own the resolver says nothing about the page", async () => {
+    const mine = ctxFor(db, AGENT_A, { shared: CRUD.manage }, instances, {}, { grant: grantHolding("public_link"), viewUrl: VIEWS });
+    const id = String((await run("artifact_create", { gallery: "shared", title: "Team page", view: { html: "<p>x</p>" } }, mine)).id);
+    const stale = seen(id);
+    await run("artifact_update", { id, title: "Renamed" }, mine);
+    assert.equal(db.prepare("SELECT created_by_id FROM la_artifact WHERE id = ?").get(id)?.created_by_id, AGENT_A.id);
+    // wrong expect, right creator, not its gallery: the same resolver answer as a right expect (the gallery id)
+    assert.equal(handlers.artifact_share.scope?.({ id, expect: stale } as never, AGENT_A as never), "shared");
+    assert.equal(handlers.artifact_share.scope?.({ id, expect: { ...stale, sourcesSha256: "sha256:guess" } } as never, AGENT_A as never), "shared");
+    assert.equal(handlers.artifact_publish.scope?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never, AGENT_A as never), "shared");
   });
   it("F3: where it cannot refuse early, the hold says 'Do not approve' and an approval of it never runs, even if the page matches later", async () => {
     const id = await page();
@@ -248,6 +259,18 @@ describe("what the approval is bound to: pushed data, the source list, and a hol
     const ok = { id, expect: seen(id), label: "fine" };
     handlers.artifact_share.holdView?.(ok as never);
     assert.ok((await run("artifact_share", ok, stranger)).linkId);
+  });
+  it("a hold that cannot be flagged is not created: the hold view throws, and no link can follow (fails closed)", async () => {
+    const id = await page();
+    const stranger = ctxFor(db, AGENT_B, { [AGENT_A.id]: CRUD.contribute }, instances, {}, { grant: grantHolding("public_link"), viewUrl: VIEWS });
+    const input = { id, expect: seen(id), label: "Stranger" };
+    await run("artifact_update", { id, title: "Renamed" }, agent());
+    db.exec("DROP TABLE la_hold_flag"); // the injected write failure
+    assert.throws(() => handlers.artifact_share.holdView?.(input as never), /la_hold_flag/, "the error is not swallowed");
+    assert.throws(() => handlers.artifact_publish.holdView?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never), /la_hold_flag/);
+    // and an input that was never flagged cannot slip through the run-time check: the lookup fails too
+    await assert.rejects(run("artifact_share", { ...input, expect: seen(id) }, stranger), /la_hold_flag/);
+    noLink();
   });
   it("artifact_get answers shareExpect for the version it returns (a pinned version, too)", async () => {
     const id = await dataPage();

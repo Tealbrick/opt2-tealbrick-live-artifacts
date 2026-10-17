@@ -245,25 +245,24 @@ const sayArtifact = (i: { id: string }) => `page ${i.id}`;
 /** Receipt text for a link op: the page title, never an address or a token. */
 const titleOf = (id: string): string => String((scopeDb ? artifactRow(scopeDb, id)?.title : undefined) ?? id).slice(0, 80);
 
-/** S4 review F3: a link request that is not the page as it is now is refused BEFORE a hold exists, where the caller already
- *  knows the page (it is in the caller's own gallery, or the caller made it). The scope resolver runs before the hold
- *  decision, so no hold appears. For any other caller this would tell a stranger whether a page exists (an unreachable page
- *  must look like a missing one: scope_denied), so the call goes on to the scope check and a hold; that hold starts with
- *  "Do not approve" and its input is flagged, so even an approval of it is refused when it runs. */
+/** S4 review F3: a link request that is not the page as it is now is refused BEFORE a hold exists, where the page is in the
+ *  caller's OWN gallery (gallery id = caller id). The scope resolver runs before the scope check and the hold decision, so
+ *  it must reveal nothing to a caller that has no right to the page. Only the owner of a gallery has one for sure: a
+ *  creator whose access was withdrawn, or any other caller, goes on to the scope check (scope_denied, the same answer as
+ *  for a page that does not exist) and, if it passes, to a hold that starts with "Do not approve" and whose input is
+ *  flagged, so even an approval of it is refused when it runs. */
 function refuseBeforeHold(id: string, caller: { id: string }, diff: () => string[]): void {
   const r = scopeDb ? artifactRow(scopeDb, id) : undefined;
-  if (!r || (String(r.gallery_id) !== caller.id && String(r.created_by_id) !== caller.id)) return;
+  if (!r || String(r.gallery_id) !== caller.id) return;
   const d = diff();
   if (d.length > 0) throw pageChanged(`the page (${d.join(", ")})`);
 }
-/** Render side of F3: remember an input whose hold was rendered on a mismatch. */
+/** Render side of F3: remember an input whose hold was rendered on a mismatch. A write that fails is NOT swallowed: the
+ *  hold view throws, the SDK creates no hold (the call fails with an internal error), so a hold that cannot be flagged
+ *  can never be approved. */
 function flagMismatch(input: Json, diff: string[]): void {
   if (diff.length === 0 || !scopeDb) return;
-  try {
-    flagHold(scopeDb, digest(input), clock());
-  } catch {
-    // a hold view must never throw; the run-time check of expect still refuses the call
-  }
+  flagHold(scopeDb, digest(input), clock());
 }
 /** Run side of F3: an approved hold that was rendered on a mismatch never runs. */
 function refuseFlagged(db: Db, input: Json): void {

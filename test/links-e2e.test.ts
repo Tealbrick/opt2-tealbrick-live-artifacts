@@ -429,6 +429,69 @@ describe("what the approval is bound to, on the real SDK", () => {
   });
 });
 
+describe("review blockers: a hold that cannot be flagged, and a creator that lost its scope (real SDK)", () => {
+  let b: Booted;
+  before(async () => {
+    b = await boot(VIEWS);
+  });
+  after(async () => {
+    await b?.stop();
+  });
+  const appDb = <T>(fn: (db: DatabaseSync) => T): T => {
+    const db = new DatabaseSync(join(b.dir, "app.db"));
+    try {
+      return fn(db);
+    } finally {
+      db.close();
+    }
+  };
+  const countHolds = (): number => Number((appDb((db) => db.prepare("SELECT COUNT(*) AS c FROM tb_receipts WHERE status = 'held'").get()) as { c: number }).c);
+  const create = async (title: string, key: string, agent?: `agt_${string}`): Promise<string> => {
+    const r = await b.call("artifact_create", { ...PAGE, title, gallery: "shared" }, { held: [], key, ...(agent ? { agent } : {}) });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return String(r.body.output.id);
+  };
+
+  it("a failed la_hold_flag write: no hold is created, the call fails, no approval exists and no link is made", async () => {
+    const id = await create("Flag target", "idem-key-flag-1");
+    const stale = await looked(b, id, undefined, b.w.agent2);
+    assert.equal((await b.call("artifact_update", { id, title: "Renamed" }, { held: [], key: "idem-key-flag-2" })).status, 200);
+    appDb((db) => db.exec("CREATE TRIGGER la_inject BEFORE INSERT ON la_hold_flag BEGIN SELECT RAISE(ABORT, 'injected write failure'); END"));
+    try {
+      const holds = countHolds();
+      const input = { id, expect: stale, label: "Injected" };
+      const r = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-flag-3", agent: b.w.agent2 });
+      assert.equal(r.status, 500, JSON.stringify(r.body));
+      assert.notEqual(r.status, 202);
+      assert.equal(countHolds(), holds, "the SDK created no hold");
+      // there is nothing to approve; the same call again fails the same way and never runs
+      const again = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-flag-3", agent: b.w.agent2 });
+      assert.equal(again.status, 500);
+      assert.equal(b.links().length, 0, "no link");
+    } finally {
+      appDb((db) => db.exec("DROP TRIGGER la_inject"));
+    }
+  });
+
+  it("a creator whose scope was revoked learns nothing from a guessed expect: the same answer and code as for an unknown page", async () => {
+    const id = await create("Creator page", "idem-key-scope-1", b.w.agent2);
+    const owner = await b.person();
+    const revoke = await owner.op("tb.scopes_set", { agent: b.w.agent2, type: "gallery", id: "shared", access: null });
+    assert.equal(revoke.status, 200, JSON.stringify(revoke.body));
+    const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
+    const real = await b.call("artifact_share", { id, expect: guess }, { held: ["public_link"], key: "idem-key-scope-2", agent: b.w.agent2 });
+    const unknown = await b.call("artifact_share", { id: "art_01J0000000000000000000ZZZZ", expect: guess }, { held: ["public_link"], key: "idem-key-scope-3", agent: b.w.agent2 });
+    assert.equal(real.status, 403, JSON.stringify(real.body));
+    assert.equal(real.body.error.code, "scope_denied");
+    assert.deepEqual([real.status, real.body.error.code, real.body.error.message], [unknown.status, unknown.body.error.code, unknown.body.error.message]);
+    const pub = await b.call("artifact_publish", { id, version: 1, expect: { htmlSha256: "sha256:00" } }, { held: ["public_link"], key: "idem-key-scope-4", agent: b.w.agent2 });
+    assert.equal(pub.body.error.code, "scope_denied");
+    // restore the access (the owner can give it back)
+    await owner.op("tb.scopes_set", { agent: b.w.agent2, type: "gallery", id: "shared", access: "contribute" });
+    assert.equal(b.links().length, 0);
+  });
+});
+
 describe("the owner on the real SDK person route", () => {
   let b: Booted;
   before(async () => {
