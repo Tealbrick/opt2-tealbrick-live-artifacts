@@ -2,7 +2,9 @@
 // so the same code runs behind the bridge's views origin (LA-1) and in tests. The app does the token work (digest lookup,
 // expiry, kind, version, data); the bridge adds the header floor, the host check, rate limits and the pause answer.
 //
-// URLs (GET only; prefix /v/live-artifacts):
+// URLs (GET only). The public address is https://<views origin>/v/live-artifacts/…; the SDK serves the manifest viewer route
+// (`publicRoutes` `/v`, purpose `viewer`, MANIFEST M-PR-2) and hands the handler the path WITHOUT that prefix, so the
+// paths below are what the handler sees:
 //   /<token>            the shell (our HTML + JS, no data in HTML)
 //   /<token>/data       JSON for the shell: banner fields, the sources this link may show (ETag, 304), and `doc`
 //   /_d/<doc ticket>    the artifact document. The ticket is NOT the link token (review PR #2, finding 3: agent code can
@@ -10,12 +12,12 @@
 //                       the page holds anyway. It is served only into a frame (Sec-Fetch-Dest: iframe).
 //   /_s/<hash>.js|css   shell assets, content-hashed, immutable
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { digest, opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
-import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { LIMITS } from "./limits.ts";
+import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
+import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
+/** The public path prefix on the views origin (the SDK strips it before our handler runs). Used to build addresses and CSPs. */
 export const VIEW_PREFIX = "/v/live-artifacts";
 export const TOKEN_RE = /^tbv_[A-Za-z0-9_-]{43}$/;
 export const PREVIEW_TTL_MS = 10 * 60 * 1000;
@@ -38,6 +40,41 @@ export interface ViewerConfig {
   mainOrigin: string | null;
   /** shown in the banner ("Shared by <workspace>") */
   workspaceName: string;
+}
+
+// ─────────────────────────────────────────────────────────── document ticket key
+
+/** The app secret that signs document tickets. Created once, kept in the SDK's sealed secret store (ctx.secrets), never
+ *  logged, never in a response. */
+export const DOC_KEY_SECRET = "doc_ticket_key";
+let docKeyCache: string | null = null;
+let docKeyPending: Promise<string> | null = null;
+/** Tests inject a key (null clears it). */
+export function setDocKey(key: string | null): void {
+  docKeyCache = key;
+}
+/** The signing key: read from the secret store, created on first use (onStart calls this once at boot). Absent or
+ *  unreadable (restored into another deployment) → a new key; the tickets the old key signed stop working. */
+export function ensureDocKey(secrets: Pick<AppSecrets, "get" | "put">): Promise<string> {
+  if (docKeyCache !== null) return Promise.resolve(docKeyCache);
+  docKeyPending ??= (async () => {
+    let key = await secrets.get(DOC_KEY_SECRET);
+    if (!key) {
+      key = randomBytes(32).toString("base64url");
+      await secrets.put(DOC_KEY_SECRET, key);
+    }
+    docKeyCache = key;
+    return key;
+  })().finally(() => {
+    docKeyPending = null;
+  });
+  return docKeyPending;
+}
+
+/** `https://host[:port]` only (no path, query, user info or spaces): the value goes into CSP headers and addresses
+ *  (review PR #2, finding 11). The SDK's requireViewUrl checks only that the string is not empty, so this check stays. */
+export function httpsOrigin(v: unknown): string | null {
+  return typeof v === "string" && /^https:\/\/[a-z0-9.-]{1,253}(:\d{1,5})?$/.test(v) ? v : null;
 }
 
 // ─────────────────────────────────────────────────────────── headers
@@ -81,20 +118,10 @@ export function documentCsp(cfg: ViewerConfig, preview = false): string {
     `frame-ancestors ${ancestors}`,
   ].join("; ");
 }
-/** The app's own floor (the bridge forces VIEWER_HEADER_FLOOR as well, LA-1; both are tested). */
-export const APP_FLOOR: Readonly<Record<string, string>> = {
-  "x-content-type-options": "nosniff",
-  "referrer-policy": "no-referrer",
-  "x-robots-tag": "noindex, nofollow",
-  "cross-origin-opener-policy": "same-origin",
-  "cross-origin-resource-policy": "same-origin",
-  "x-dns-prefetch-control": "off",
-  "permissions-policy":
-    "accelerometer=(), autoplay=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), xr-spatial-tracking=()",
-};
-
+/** Every answer carries the shared floor (VIEWER_HEADER_FLOOR, manifest 0.1.21, L1; the SDK forces it again) and replaces
+ *  only the CSP with one of ours; `extra` may mark content-hashed assets cacheable. */
 function respond(status: number, body: string | null, type: string, csp: string, extra: Record<string, string> = {}): Response {
-  const headers = new Headers({ ...APP_FLOOR, "cache-control": "no-store", "content-security-policy": csp, ...extra });
+  const headers = new Headers({ ...VIEWER_HEADER_FLOOR, "content-security-policy": csp, ...extra });
   if (body !== null) headers.set("content-type", type);
   return new Response(body, { status, headers });
 }
@@ -228,12 +255,10 @@ const ASSETS: Record<string, { body: string; type: string }> = {
   [TOKENS_CSS_PATH]: { body: TOKENS_CSS, type: "text/css; charset=utf-8" },
 };
 
-/** Serve one viewer request. `path` is the URL path (must start with VIEW_PREFIX). */
+/** Serve one viewer request. The URL path is the one the SDK hands a viewer route: `/<rest>` WITHOUT `/v/live-artifacts`. */
 export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: number): Response {
   if (req.method !== "GET") return respond(405, null, "", BARE_CSP, { allow: "GET" });
-  const path = new URL(req.url).pathname;
-  if (!path.startsWith(`${VIEW_PREFIX}/`)) return notFound();
-  const rest = path.slice(VIEW_PREFIX.length + 1).split("/");
+  const rest = new URL(req.url).pathname.slice(1).split("/");
   if (rest[0] === "_s") {
     const asset = ASSETS[rest.join("/")];
     if (!asset) return notFound();
@@ -268,5 +293,3 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
   return notFound();
 }
 
-/** Default lifetime bounds for viewer links (S4 creates them; constants live with the viewer rules). */
-export const LINK_DAYS = { default: LIMITS.defaultLinkDays, max: LIMITS.maxLinkDays } as const;

@@ -6,7 +6,7 @@ import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, NO_GALLERY, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { artifactRow, GALLERY, pruneVersions, SHARED_GALLERY } from "../src/store.ts";
-import { AGENT_A, AGENT_B, CRUD, ctxFor, type Instance, migratedDb, OWNER } from "./helpers.ts";
+import { AGENT_A, AGENT_B, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
 type Out = Record<string, any>;
 const run = async (opId: keyof typeof handlers, input: unknown, ctx: OpContext): Promise<Out> => (await handlers[opId].run(input as never, ctx)) as Out;
@@ -41,7 +41,7 @@ beforeEach(async () => {
   now = Date.UTC(2026, 9, 17, 12, 0, 0);
   setClock(() => now);
   bindScopeDb(db);
-  await definition.onStart?.({ db, scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
+  await definition.onStart?.({ db, secrets: memorySecrets(), scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
 });
 
 describe("galleries and access", () => {

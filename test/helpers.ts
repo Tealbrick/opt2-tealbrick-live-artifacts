@@ -63,6 +63,7 @@ export function ctxFor(
   access: Record<string, readonly CrudAction[]> = {},
   instances: Instance[] = [],
   context: Record<string, unknown> = {},
+  extra: Record<string, unknown> = {},
 ): OpContext & { instances: Instance[]; changed: number } {
   const person = caller.type === "person";
   const state = { changed: 0 };
@@ -93,6 +94,7 @@ export function ctxFor(
     statusChanged: () => {
       state.changed++;
     },
+    ...extra,
     instances,
     get changed() {
       return state.changed;
@@ -100,3 +102,17 @@ export function ctxFor(
   };
   return ctx as unknown as OpContext & { instances: Instance[]; changed: number };
 }
+
+/** An in-memory stand-in for the SDK's `ctx.secrets` (get/put/delete). */
+export function memorySecrets(): { get(name: string): Promise<string | null>; put(name: string, value: string): Promise<void>; delete(name: string): Promise<void>; names(): string[] } {
+  const m = new Map<string, string>();
+  return {
+    get: async (n) => m.get(n) ?? null,
+    put: async (n, v) => void m.set(n, v),
+    delete: async (n) => void m.delete(n),
+    names: () => [...m.keys()],
+  };
+}
+
+/** The slice of a verified grant the handlers read: `grant.claims.held` (agent cards that hold public_link). */
+export const grantHolding = (...held: string[]): { claims: { held: string[] } } => ({ claims: { held } });

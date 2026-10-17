@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import { bindScopeDb, definition, handlers, setClock, viewUrlOf } from "../src/app.ts";
-import { createPreview, docTicket, documentCsp, handleViewer, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, shellCsp, TOKEN_RE, type ViewerConfig } from "../src/viewer.ts";
+import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
+import { createPreview, docTicket, documentCsp, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
-import { AGENT_A, CRUD, ctxFor, type Instance, migratedDb, OWNER } from "./helpers.ts";
+import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
 type Out = Record<string, any>;
 const CFG: ViewerConfig = { viewOrigin: "https://views-abc.up.railway.app", mainOrigin: "https://bridge-abc.up.railway.app", workspaceName: "Acme", docKey: "test-doc-key-0123456789abcdef" };
@@ -15,8 +15,11 @@ let instances: Instance[];
 let now: number;
 let seq = 1_700_000_000_000;
 const A = () => ctxFor(db, AGENT_A, { [AGENT_A.id]: CRUD.manage }, instances);
+/** The request the SDK hands the viewer route: the public path WITHOUT the /v/live-artifacts prefix (SDK 0.1.26). */
+const stripped = (path: string): string => (path.startsWith(`${VIEW_PREFIX}/`) ? path.slice(VIEW_PREFIX.length) : path);
+const request = (path: string, headers: Record<string, string> = {}, method = "GET"): Request => new Request(`http://live-artifacts.views.internal${stripped(path)}`, { method, headers });
 const get = (path: string, headers: Record<string, string> = {}, method = "GET") =>
-  handleViewer(db, new Request(`http://app.internal${path}`, { method, headers: { "sec-fetch-dest": path.includes("/_d/") ? "iframe" : "document", ...headers } }), CFG, now);
+  handleViewer(db, request(path, { "sec-fetch-dest": path.includes("/_d/") ? "iframe" : "document", ...headers }, method), CFG, now);
 /** the document path the shell would frame (from /data) */
 const docPath = async (tok: string): Promise<string> => `/v/live-artifacts/${((await get(`/v/live-artifacts/${tok}/data`).json()) as Out).doc}`;
 const linkIdOf = (tok: string): string => String(db.prepare("SELECT id FROM la_link WHERE token_digest = ?").get(opaqueDigest(tok))?.id);
@@ -55,7 +58,7 @@ beforeEach(async () => {
   now = Date.UTC(2026, 9, 17, 12, 0, 0);
   setClock(() => now);
   bindScopeDb(db);
-  await definition.onStart?.({ db, scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
+  await definition.onStart?.({ db, secrets: memorySecrets(), scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
 });
 
 describe("tokens and the uniform 404", () => {
@@ -138,7 +141,7 @@ describe("documents only inside a frame (Fetch Metadata)", () => {
     const path = await docPath(link(id));
     assert.equal(get(path).status, 200);
     assert.equal(get(path, { "sec-fetch-dest": "document" }).status, 404);
-    const bare = handleViewer(db, new Request(`http://app.internal${path}`), CFG, now);
+    const bare = handleViewer(db, request(path), CFG, now);
     assert.equal(bare.status, 404, "no header → refused (fail closed)");
   });
   it("a document ticket expires (10–15 min) and dies with its link", async () => {
@@ -223,7 +226,7 @@ describe("view counts and previews", () => {
     get(`/v/live-artifacts/${tok}`);
     get(`/v/live-artifacts/${tok}`);
     get(`/v/live-artifacts/${tok}`, { "sec-fetch-dest": "empty" }); // a prefetch / unfurl bot: not counted
-    handleViewer(db, new Request(`http://app.internal/v/live-artifacts/${tok}`), CFG, now); // no Fetch Metadata: not counted
+    handleViewer(db, request(`/v/live-artifacts/${tok}`), CFG, now); // no Fetch Metadata: not counted
     get(`/v/live-artifacts/${tok}/data`);
     const row = db.prepare("SELECT views, last_seen_day FROM la_link WHERE kind = 'viewer'").get();
     assert.deepEqual([Number(row?.views), row?.last_seen_day], [2, "2026-10-17"]);
@@ -234,9 +237,10 @@ describe("view counts and previews", () => {
     const id = await page();
     const owner = ctxFor(db, OWNER, {}, instances);
     await assert.rejects(run("artifact_preview_ticket", { id }, owner), (e: { code?: string }) => e.code === "view_origin_missing");
-    assert.equal(viewUrlOf({ viewUrl: "http://insecure" }), null);
-    for (const bad of ["https://a.example; script-src *", "https://a b", "https://u@a.example", "https://a.example/x", "https://a.example\n"]) assert.equal(viewUrlOf({ viewUrl: bad }), null, bad);
-    assert.equal(viewUrlOf({ viewUrl: "https://views-abc.up.railway.app:8443" }), "https://views-abc.up.railway.app:8443");
+    await assert.rejects(run("artifact_preview_ticket", { id }, Object.assign(ctxFor(db, OWNER, {}, instances), { viewUrl: "http://insecure" })), (e: { code?: string }) => e.code === "view_origin_missing", "an http address is no viewer address");
+    assert.equal(httpsOrigin("http://insecure"), null);
+    for (const bad of ["https://a.example; script-src *", "https://a b", "https://u@a.example", "https://a.example/x", "https://a.example\n"]) assert.equal(httpsOrigin(bad), null, bad);
+    assert.equal(httpsOrigin("https://views-abc.up.railway.app:8443"), "https://views-abc.up.railway.app:8443");
     const withView = Object.assign(ctxFor(db, OWNER, {}, instances), { viewUrl: CFG.viewOrigin });
     link(id); // the page is shared → the next update is staged
     await run("artifact_update", { id, view: { html: "<p>v2 staged</p>" } }, A());

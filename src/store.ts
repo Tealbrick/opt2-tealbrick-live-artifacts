@@ -281,7 +281,7 @@ export function setSettings(db: Db, s: { defaultLinkDays: number }): { defaultLi
 
 // ─────────────────────────────────────────────────────────── writes
 
-function logActivity(db: Db, artifactId: string, action: string, by: Actor, summary: string, now: number): void {
+export function logActivity(db: Db, artifactId: string, action: string, by: Actor, summary: string, now: number): void {
   db.prepare("INSERT INTO la_activity (id, artifact_id, at, action, by_type, by_id, by_name, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
     `act_${ulid(now)}`,
     artifactId,
@@ -531,13 +531,27 @@ export function putData(db: Db, id: string, key: string, data: Json, by: Actor, 
   });
 }
 
-/** Owner: make a version live (promote the staged one or roll back); optionally publish staged pushed data. */
-export function publishVersion(db: Db, id: string, n: number, data: boolean, by: Actor, now: number): { liveVersion: number; publishedKeys: string[] } {
+/** Staged pushed data to publish with a version: all of it (owner), or the listed keys, each bound to the digest the
+ *  agent saw (an agent publish: what the owner approved is what goes live). */
+export type PublishData = boolean | readonly { key: string; digest: string }[];
+
+/** Make a version live (promote the staged one or roll back) and publish staged pushed data (see PublishData). */
+export function publishVersion(db: Db, id: string, n: number, data: PublishData, by: Actor, now: number): { liveVersion: number; publishedKeys: string[] } {
   return db.transaction(() => {
     const a = artifactRow(db, id);
     if (!a) throw notFound();
     const v = versionRow(db, id, n);
     if (!v) throw new TbError("version_unknown", `version ${n} does not exist (it may have been pruned)`, 404);
+    // listed data must still be what the agent asked for: checked BEFORE any change
+    const chosen: string[] = [];
+    if (typeof data !== "boolean") {
+      for (const d of data) {
+        const r = db.prepare("SELECT staged_json FROM la_snapshot WHERE artifact_id = ? AND key = ? AND staged_json IS NOT NULL").get(id, d.key);
+        if (!r || digest(JSON.parse(String(r.staged_json)) as Json) !== d.digest)
+          throw new TbError("staged_changed", `the staged data of "${d.key}" changed after you asked (or is gone); read the page again and ask again`, 409);
+        chosen.push(d.key);
+      }
+    }
     const stagedN = a.staged_version === null ? null : Number(a.staged_version);
     const keepStaged = stagedN !== null && stagedN !== n && stagedN > n;
     const publishesPending = stagedN === null || stagedN === n;
@@ -549,8 +563,9 @@ export function publishVersion(db: Db, id: string, n: number, data: boolean, by:
     // the live version's contract decides sources and schedule (unchanged bindings keep their approval)
     applyContract(db, id, parseStoredContract(String(v.contract_json)), a, now);
     const keys: string[] = [];
-    if (data) {
+    if (data !== false) {
       for (const r of db.prepare("SELECT key, staged_json FROM la_snapshot WHERE artifact_id = ? AND staged_json IS NOT NULL").all(id)) {
+        if (typeof data !== "boolean" && !chosen.includes(String(r.key))) continue;
         const text = String(r.staged_json);
         db.prepare(
           "UPDATE la_snapshot SET data_json = staged_json, staged_json = NULL, bytes = ?, digest = ?, fetched_at = ?, status = 'ok', code = NULL WHERE artifact_id = ? AND key = ?",

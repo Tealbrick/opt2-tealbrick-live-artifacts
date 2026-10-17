@@ -14,7 +14,20 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { CrudAction } from "@opt2-tealbrick/manifest";
 import type { JobContext, JobsApi } from "@opt2-tealbrick/miniapp-sdk";
-import { type AppDefinition, type Db, defineApp, type HandlerSpec, type Json, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import {
+  type AppDefinition,
+  type Db,
+  defineApp,
+  type HandlerSpec,
+  type Json,
+  type OpContext,
+  type PublicHandler,
+  requireViewUrl,
+  type SdkAppDefinition,
+  type SdkOpContext,
+  TbError,
+  viewOriginMissing,
+} from "@opt2-tealbrick/miniapp-sdk";
 import {
   type ArtifactArchiveInput,
   type ArtifactCreateInput,
@@ -22,15 +35,21 @@ import {
   type ArtifactDeleteInput,
   type ArtifactDetailInput,
   type ArtifactGetInput,
+  type ArtifactLinkRevokeInput,
   type ArtifactListInput,
   type ArtifactNewInput,
   type ArtifactPreviewTicketInput,
+  type ArtifactPublishInput,
   type ArtifactRefreshInput,
   type ArtifactRemoveInput,
+  type ArtifactShareInput,
   type ArtifactUpdateInput,
   type AutopublishSetInput,
   type GalleriesListInput,
   type GalleryViewInput,
+  type LinkCreateInput,
+  type LinkRevokeInput,
+  type LinksListInput,
   OP,
   type OpId,
   type PublishVersionInput,
@@ -42,6 +61,7 @@ import {
 } from "#kit";
 import { companionOps, EMPTY_CONTRACT, normalizeContract, parseStoredContract, type RawContract } from "./contract.ts";
 import { LIMITS } from "./limits.ts";
+import { createLink, galleryOfLink, listLinks, publishHoldText, revokeLink, shareHoldText } from "./links.ts";
 import { type LintItem, lintErrors, lintHtml } from "./lint.ts";
 import { project, REFRESH_JOB, recordTick, refreshArtifact } from "./refresh.ts";
 import {
@@ -71,15 +91,40 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
-import { createPreview, VIEW_PREFIX } from "./viewer.ts";
+import { createPreview, ensureDocKey, handleViewer, httpsOrigin, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
 
-/** The bridge's viewer address (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). Read tolerantly: an SDK without the
- *  field gives undefined → null → view_origin_missing. */
-export function viewUrlOf(ctx: object): string | null {
-  const v = (ctx as { viewUrl?: unknown }).viewUrl;
-  // host[:port] only: the value goes into CSP headers (review PR #2, finding 11)
-  return typeof v === "string" && /^https:\/\/[a-z0-9.-]{1,253}(:\d{1,5})?$/.test(v) ? v : null;
+/** The viewer address of the bridge (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). The SDK's requireViewUrl answers 409
+ *  view_origin_missing while there is none; it checks only that the string is not empty, so the https host check stays here
+ *  (the value goes into CSP headers and addresses). */
+function viewBase(ctx: object): string {
+  const url = httpsOrigin(requireViewUrl(ctx as { viewUrl?: string | null }));
+  if (url === null) throw viewOriginMissing();
+  return url;
 }
+
+/** Banner text of the viewer shell ("Shared by <this> · written by an AI agent"). The slice carries no workspace name. */
+const VIEWER_WORKSPACE = "the owner of this workspace";
+/** The main origin of the bridge, from the slice (`bridge.publicUrl`); previews may be framed from there. */
+function mainOriginOf(publicUrl: unknown): string | null {
+  try {
+    return typeof publicUrl === "string" ? httpsOrigin(new URL(publicUrl).origin) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The viewer route (manifest `publicRoutes` `/v`, purpose `viewer`, MANIFEST M-PR-2). The SDK serves GET /v/live-artifacts/…
+ *  only, answers 503 while the instance is paused, passes the allow-listed request headers, forces VIEWER_HEADER_FLOOR and
+ *  refuses a `_d` document whose CSP is not a safe sandbox; it hands us the path WITHOUT the `/v/live-artifacts` prefix. */
+export const viewerRoute: PublicHandler = async (req, ctx) => {
+  const cfg: ViewerConfig = {
+    docKey: await ensureDocKey(ctx.secrets),
+    viewOrigin: httpsOrigin(ctx.viewUrl),
+    mainOrigin: mainOriginOf(ctx.publicUrl),
+    workspaceName: VIEWER_WORKSPACE,
+  };
+  return handleViewer(ctx.db, req, cfg, clock());
+};
 
 export const manifest = JSON.parse(readFileSync(new URL("../tealbrick.manifest.json", import.meta.url), "utf8")) as AppDefinition["manifest"];
 export const migrationsDir = fileURLToPath(new URL("../migrations", import.meta.url));
@@ -185,6 +230,19 @@ function review(ctx: OpContext, id: string) {
   return { sourcesPending: pending, triggerPending: String(r?.refresh_state) === "waiting_approval", ownerLink: ctx.ownerLink(`/page/${id}`) };
 }
 const sayArtifact = (i: { id: string }) => `page ${i.id}`;
+/** Receipt text for a link op: the page title, never an address or a token. */
+const titleOf = (id: string): string => String((scopeDb ? artifactRow(scopeDb, id)?.title : undefined) ?? id).slice(0, 80);
+
+/** DESIGN §3.1, spec PORTAL-API (hold family public_link): an app that offers links refuses an AGENT (or app) link op when
+ *  the verified grant does not hold `public_link`, until the owner accepts the offer. Fail closed: no grant, or a grant
+ *  without the family in `held`, is a refusal. The SDK holds the call when the family IS in `held`; this guard is for the
+ *  grant that would otherwise run the op straight away. The owner's own calls are not held. */
+function needLinkHold(ctx: OpContext): void {
+  if (ctx.caller.type === "person") return;
+  const held = ctx.grant?.claims.held;
+  if (!Array.isArray(held) || !held.includes("public_link"))
+    throw new TbError("link_needs_hold", "A public link needs the owner's approval, and this agent's card does not hold public_link. Ask the owner to accept the public_link offer in Portal.", 403);
+}
 
 export const handlers = {
   // ───────────────────────────────────────────── agent ops
@@ -348,6 +406,52 @@ export const handlers = {
       return { results: out.results };
     },
   }),
+  [OP.artifactShare]: op<ArtifactShareInput, unknown>({
+    scope: (i) => galleryOfArtifact(i.id),
+    redact: (i) => `share page "${titleOf(i.id)}" with a link`,
+    holdView: (i) => (scopeDb ? shareHoldText(scopeDb, i, clock()) : `Create a public link to the live page ${i.id}.`),
+    async run(i, ctx) {
+      needLinkHold(ctx);
+      const base = viewBase(ctx);
+      const by = await prepare(ctx);
+      await needArtifact(ctx, i.id, "create");
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by }, clock());
+      ctx.statusChanged();
+      // the address is in this answer only (the SDK seals the idempotent answer for 24 h); the app keeps its digest
+      return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
+    },
+  }),
+  [OP.artifactPublish]: op<ArtifactPublishInput, unknown>({
+    scope: (i) => galleryOfArtifact(i.id),
+    redact: (i) => `page "${titleOf(i.id)}": version ${i.version} live${i.data?.length ? `, data ${i.data.map((d) => d.key).join(", ")}` : ""}`,
+    holdView: (i) => (scopeDb ? publishHoldText(scopeDb, i, clock()) : `Change what the people who hold a link to ${i.id} see.`),
+    async run(i, ctx) {
+      needLinkHold(ctx);
+      const by = await prepare(ctx);
+      const a = await needArtifact(ctx, i.id, "update");
+      if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
+      const data = i.data ?? [];
+      if (i.version === Number(a.live_version) && data.length === 0) throw new TbError("nothing_to_publish", `version ${i.version} is live already and you listed no staged data`, 409);
+      const r = publishVersion(ctx.db, i.id, i.version, data, by, clock());
+      ctx.statusChanged();
+      return r;
+    },
+  }),
+  [OP.artifactLinkRevoke]: op<ArtifactLinkRevokeInput, unknown>({
+    // the gallery of the link's page, so the SDK checks update access to THAT gallery (unknown link = a gallery nobody holds)
+    scope: (i) => (scopeDb ? galleryOfLink(scopeDb, i.linkId, NO_GALLERY) : null),
+    redact: (i) => `revoke link ${i.linkId}`,
+    async run(i, ctx) {
+      // no needLinkHold: agents may always narrow who can see a page (DESIGN §3.1)
+      const by = await prepare(ctx);
+      const l = ctx.db.prepare("SELECT artifact_id FROM la_link WHERE id = ? AND kind = 'viewer'").get(i.linkId);
+      if (!l) throw new TbError("link_not_found", "no such link", 404);
+      await needArtifact(ctx, String(l.artifact_id), "update");
+      const r = revokeLink(ctx.db, i.linkId, by, clock());
+      ctx.statusChanged();
+      return { revoked: r.revoked };
+    },
+  }),
 
   // ───────────────────────────────────────────── owner ops
   [OP.galleryView]: op<GalleryViewInput, unknown>({
@@ -360,6 +464,7 @@ export const handlers = {
         listArtifacts(ctx.db, { galleries: ids, filter, limit: LIMITS.artifactsPerWorkspace }, now).items.length;
       const notices: { code: string; message: string }[] = [];
       if (!ctx.publicUrl) notices.push({ code: "bridge_url_missing", message: "The bridge address is not known yet. Review links appear when it is." });
+      if (httpsOrigin((ctx as { viewUrl?: unknown }).viewUrl) === null) notices.push({ code: "view_origin_missing", message: "Links and previews need the viewer address. Ask Portal to redeploy the bridge." });
       return {
         galleries,
         items: page.items,
@@ -392,8 +497,7 @@ export const handlers = {
   }),
   [OP.artifactPreviewTicket]: op<ArtifactPreviewTicketInput, unknown>({
     async run(i, ctx) {
-      const view = viewUrlOf(ctx);
-      if (!view) throw new TbError("view_origin_missing", "The bridge has no viewer address yet. Ask Portal to redeploy the bridge.", 409);
+      const view = viewBase(ctx);
       if (!artifactRow(ctx.db, i.id)) throw notFound();
       if (i.version !== undefined && !versionRow(ctx.db, i.id, i.version)) throw new TbError("version_unknown", `version ${i.version} does not exist`, 404);
       const p = createPreview(ctx.db, i.id, i.version ?? null, actorOf(ctx), clock());
@@ -473,6 +577,29 @@ export const handlers = {
     async run(i, ctx) {
       setAutoPublish(ctx.db, i.id, i.mode, actorOf(ctx), clock());
       return { id: i.id, autoPublish: i.mode };
+    },
+  }),
+  [OP.linkCreate]: op<LinkCreateInput, unknown>({
+    redact: (i) => `link for page "${titleOf(i.id)}"`,
+    async run(i, ctx) {
+      // the owner is the approver: no hold, no link_needs_hold (DESIGN §3.2)
+      const base = viewBase(ctx);
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by: actorOf(ctx) }, clock());
+      ctx.statusChanged();
+      return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
+    },
+  }),
+  [OP.linkRevoke]: op<LinkRevokeInput, unknown>({
+    redact: (i) => `revoke link ${i.linkId}`,
+    async run(i, ctx) {
+      const r = revokeLink(ctx.db, i.linkId, actorOf(ctx), clock());
+      ctx.statusChanged();
+      return { revoked: r.revoked };
+    },
+  }),
+  [OP.linksList]: op<LinksListInput, unknown>({
+    async run(_i, ctx) {
+      return listLinks(ctx.db, clock());
     },
   }),
   [OP.artifactArchive]: op<ArtifactArchiveInput, unknown>({
@@ -593,6 +720,7 @@ export const definition: SdkAppDefinition = {
   manifest,
   handlers,
   migrations: migrationsDir,
+  publicRoutes: { "/v": viewerRoute },
   jobs: { [REFRESH_JOB]: { run: refreshTick as never, maxAttempts: 3, leaseMs: 120_000, timeoutMs: 5 * 60_000 } },
   // the page needs the owner when a refresh stopped after repeated failures (L3: a stop is never silent)
   // An app attention() replaces the SDK's jobs_failed/jobs_stuck default, so this one covers both: pages that stopped after
@@ -611,6 +739,7 @@ export const definition: SdkAppDefinition = {
   },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
+    await ensureDocKey(ctx.secrets); // the document-ticket key: created once, kept sealed in the SDK's secret store
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
   },
   events: {

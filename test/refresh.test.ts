@@ -9,7 +9,7 @@ import { bindScopeDb, definition, handlers, refreshTick, setClock } from "../src
 import { LIMITS } from "../src/limits.ts";
 import { backoffMs, CallBudget, idemKey, pointer, project, REFRESH_JOB, refreshArtifact } from "../src/refresh.ts";
 import { artifactRow } from "../src/store.ts";
-import { AGENT_A, CRUD, ctxFor, type Instance, migratedDb, OWNER } from "./helpers.ts";
+import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
 type Out = Record<string, any>;
 type Call = { product: string; op: string; input: Json; key?: string };
@@ -96,7 +96,7 @@ beforeEach(async () => {
   setClock(() => now);
   answer = async () => ({ status: "ok", output: ISSUES });
   bindScopeDb(db);
-  await definition.onStart?.({ db, scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
+  await definition.onStart?.({ db, secrets: memorySecrets(), scopes: { instances: ctxFor(db, OWNER, {}, instances).scopes.instances } } as never);
 });
 
 describe("projection (declarative only)", () => {
