@@ -2765,7 +2765,7 @@
       "audience": "person",
       "id": "artifact_preview_ticket",
       "title": "Preview a page",
-      "description": "Mint a 10-minute preview link for one version (default: the staged version, else the live one) on the viewer address. Answers view_origin_missing (409) while the bridge has no viewer address.",
+      "description": "Mint a 10-minute preview link for one version (default: the staged version, else the live one) on the viewer address. Send no idempotency key: the URL is a secret and is never stored. Answers view_origin_missing (409) while the bridge has no viewer address.",
       "input": {
         "type": "object",
         "additionalProperties": false,
