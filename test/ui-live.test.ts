@@ -304,7 +304,7 @@ describe("Page", () => {
     const m = await mountPage();
     const frame = m.host.querySelector("iframe");
     assert.ok(frame);
-    assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
+    assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin");
     assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
     assert.equal(frame.getAttribute("src"), "https://views.example.test/v/tbv_abc");
     await m.unmount();

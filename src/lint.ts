@@ -11,9 +11,9 @@ export interface LintItem {
 const FRAME_TAGS = /<\s*(iframe|object|embed|frame|frameset|portal|applet)\b/i;
 const BASE_TAG = /<\s*base\b/i;
 // Every repetition is bounded: an agent controls the input, and an unbounded `[^>]*` after a tag start is quadratic on
-// a page full of "<meta " without ">" (review of PR #1: 6.8 s per regex on 256 KiB). Tags longer than 2000 chars are
+// a page full of "<meta " without ">" (review of PR #1: 6.8 s per regex on 256 KiB). A meta tag longer than 300 chars (others: 2000) is
 // not inspected (advice only; the sandbox is the boundary).
-const META_REFRESH = /<\s*meta\b[^>]{0,2000}?http-equiv\s*=\s*["']?\s*refresh/i;
+const META_REFRESH = /<\s*meta\b[^>]{0,300}?http-equiv\s*=\s*["']?\s*refresh/i;
 /** src= / srcset= / poster= / data= / href= on a <link> pointing outside the document */
 const ATTR_URL = /\b(src|srcset|poster|data|background|href|formaction|xlink:href)\s*=\s*(?:"([^"]{0,4096})"|'([^']{0,4096})'|([^\s>]{1,4096}))/gi;
 const CSS_URL = /url\(\s*["']?\s*([^"')\s]{1,4096})/gi;

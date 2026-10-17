@@ -277,8 +277,17 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
               ) : null}
             </div>
             <div className="sandbox la-sandbox">
+              {/* The frame shows OUR viewer shell on the separate views origin (no cookies there). The shell needs
+                  allow-same-origin to load its own assets (CORP same-origin); the agent page inside it is sandboxed
+                  again by the shell and by its CSP (S2 review, finding 2). */}
               {ticket.kind === "ok" && safeHref(ticket.url) ? (
-                <iframe className="la-frame" title={`Preview of ${a.title}`} sandbox="allow-scripts" referrerPolicy="no-referrer" src={safeHref(ticket.url) ?? undefined} />
+                <iframe
+                  className="la-frame"
+                  title={`Preview of ${a.title}`}
+                  sandbox="allow-scripts allow-same-origin"
+                  referrerPolicy="no-referrer"
+                  src={safeHref(ticket.url) ?? undefined}
+                />
               ) : ticket.kind === "loading" ? (
                 <p className="tb-soft" role="status">
                   Loading the preview.
