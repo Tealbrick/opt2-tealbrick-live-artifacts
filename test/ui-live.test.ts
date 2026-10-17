@@ -693,12 +693,9 @@ describe("Review and share: step 3", () => {
     assert.match(dialog.textContent ?? "", /Who may open this page\?/);
     assert.match(dialog.textContent ?? "", /Anyone who has the address can open it until it ends or you revoke it/);
     assert.match(dialog.textContent ?? "", /What a link cannot promise/);
-<<<<<<< HEAD
     assert.match(dialog.textContent ?? "", /In some browsers page code can send what the page shows, and what a viewer types, to outside sites/);
-=======
     assert.match(dialog.textContent ?? "", /This page runs no scripts\. A link shows it without scripts\. If a later version gains scripts, this link still shows it without scripts\./);
     assert.doesNotMatch(dialog.textContent ?? "", /This page runs scripts\./);
->>>>>>> 3a72b55 (S7/C239: owner UI shows the runs-scripts sentence and tag; canary for the scriptless public link; skill, security notes, conformance fixture)
     assert.match(dialog.textContent ?? "", /Everything the page shows can be copied by whoever sees it/);
     assert.match(dialog.textContent ?? "", /wait for you before link holders see them/);
     assert.match(dialog.textContent ?? "", /1 link of this page is active\. At most 5\./);

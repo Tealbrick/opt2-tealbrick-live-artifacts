@@ -551,7 +551,7 @@ describe("pages that run scripts (C239)", () => {
     ["an svg handler", '<!doctype html><html><body><svg onload="x()"></svg></body></html>'],
     ["a script in a template", "<!doctype html><html><body><template><script>1</script></template></body></html>"],
   ];
-  const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+  const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ?, served_html = NULL, served_runs_scripts = NULL, served_plain_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
   it("the server decides from the sanitized page: scripts, handlers, javascript: URLs; an agent flag changes nothing", async () => {
     for (const [what, html] of SCRIPTS) {
       const id = await page(`P ${what}`);

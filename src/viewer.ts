@@ -14,7 +14,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { bindData, bindsData, servedDocumentInfo } from "./sanitize.ts";
+import { bindData, bindsData, versionPlain, versionServed } from "./sanitize.ts";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
@@ -144,10 +144,10 @@ export function scriptlessDocumentCsp(cfg: ViewerConfig, preview = false): strin
 
 /** Which document a link gets for this page code: the page as it is (scripts allowed) only when the page runs scripts AND the
  *  owner approved this link for that; otherwise the scriptless render (scripts removed). Decided from the sanitized document. */
-export function renderFor(htmlText: string, link: LinkRow): { html: string; scriptless: boolean; runsScripts: boolean } {
-  const full = servedDocumentInfo(htmlText);
+export function renderFor(version: Record<string, unknown>, link: LinkRow): { html: string; scriptless: boolean; runsScripts: boolean } {
+  const full = versionServed(version);
   if (full.runsScripts && link.scriptsOk) return { html: full.html, scriptless: false, runsScripts: true };
-  return { html: full.runsScripts ? servedDocumentInfo(htmlText, { allowScripts: false }).html : full.html, scriptless: true, runsScripts: full.runsScripts };
+  return { html: versionPlain(version), scriptless: true, runsScripts: full.runsScripts };
 }
 const valuesOf = (sources: Record<string, Json>): Record<string, Json> => {
   const out: Record<string, Json> = {};
@@ -293,7 +293,7 @@ export function viewData(db: Db, link: LinkRow, cfg: ViewerConfig, now: number):
   const every = a.refresh_every_s === null ? null : Number(a.refresh_every_s);
   const stale = every !== null && Number(a.refresh_approved) === 1 && (newest === null || now - newest > 2 * every * 1000);
   const shown = versionRow(db, link.artifactId, versionFor(db, link));
-  const render = shown ? renderFor(Buffer.from(shown.html as Uint8Array).toString("utf8"), link) : null;
+  const render = shown ? renderFor(shown, link) : null;
   const body = {
     title: String(a.title),
     workspace: cfg.workspaceName,
@@ -355,7 +355,7 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     const v = versionRow(db, link.artifactId, t.n);
     if (!v) return notFound();
     // every agent document is sanitized on the way out (C238): owner preview and public link share this one call
-    const render = renderFor(Buffer.from(v.html as Uint8Array).toString("utf8"), link);
+    const render = renderFor(v, link);
     const preview = link.kind === "preview";
     if (!render.scriptless) return respond(200, injectHelper(render.html), "text/html; charset=utf-8", documentCsp(cfg, preview));
     // scriptless render (C239): no helper, no script can run, and the data is inlined now so the page needs no fetch

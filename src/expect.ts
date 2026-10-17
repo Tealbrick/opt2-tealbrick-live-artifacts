@@ -6,7 +6,7 @@
 // There is no early refusal before the hold: the SDK access and pause checks come first for every caller (543880d).
 import { digest } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { pageRunsScripts } from "./sanitize.ts";
+import { versionServed } from "./sanitize.ts";
 import { artifactRow, versionRow } from "./store.ts";
 
 /** The sha256 stand-in for a viewer-visible push source that has no data yet. */
@@ -26,7 +26,7 @@ export interface ShareExpect {
 }
 
 /** Does this version of the page run scripts? Decided from the sanitized document, never from anything the agent says. */
-export const versionRunsScripts = (v: Record<string, unknown>): boolean => pageRunsScripts(Buffer.from(v.html as Uint8Array).toString("utf8"));
+export const versionRunsScripts = (v: Record<string, unknown>): boolean => versionServed(v).runsScripts;
 
 /** Push sources that link viewers see, with the live data they would get. */
 export function visiblePushData(db: Db, artifactId: string): { key: string; label: string; sha256: string; bytes: number }[] {

@@ -25,7 +25,7 @@ const docPath = async (tok: string): Promise<string> => `/v/live-artifacts/${((a
 const linkIdOf = (tok: string): string => String(db.prepare("SELECT id FROM la_link WHERE token_digest = ?").get(opaqueDigest(tok))?.id);
 const run = async (opId: keyof typeof handlers, input: unknown, ctx: OpContext): Promise<Out> => (await handlers[opId].run(input as never, ctx)) as Out;
 
-const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ?, served_html = NULL, served_runs_scripts = NULL, served_plain_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
 function link(id: string, opts: { pin?: number | null; expires?: number; revoked?: boolean; kind?: "viewer" | "preview"; scriptsOk?: boolean } = {}): string {
   const token = newToken();
   db.prepare(
@@ -250,6 +250,24 @@ describe("scriptless render (C239)", () => {
     db.prepare("UPDATE la_link SET scripts_ok = 1 WHERE token_digest = ?").run(opaqueDigest(tok));
     assert.equal(get(await docPath(tok)).headers.get("content-security-policy"), documentCsp(CFG));
   });
+  it("the write stores whether the page runs scripts and its scriptless variant; the viewer serves the stored variants", async () => {
+    const created = await run("artifact_create", { title: "Stored", view: { html: "<!doctype html><html><body><h1>t</h1><script>tb.ready()</script></body></html>" } }, A());
+    const id = String(created.id);
+    const row = db.prepare("SELECT served_runs_scripts, served_html, served_plain_html FROM la_version WHERE artifact_id = ? AND n = 1").get(id);
+    assert.equal(Number(row?.served_runs_scripts), 1);
+    assert.ok(Buffer.from(row?.served_html as Uint8Array).toString("utf8").includes("<script>"));
+    assert.ok(!Buffer.from(row?.served_plain_html as Uint8Array).toString("utf8").includes("<script"));
+    const free = await page();
+    const frow = db.prepare("SELECT served_runs_scripts, served_plain_html FROM la_version WHERE artifact_id = ? AND n = 1").get(free);
+    assert.equal(Number(frow?.served_runs_scripts), 0);
+    assert.equal(frow?.served_plain_html, null, "a page without scripts needs no second copy");
+    // the stored columns are what is served: markers only they carry
+    db.prepare("UPDATE la_version SET served_plain_html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from("<!DOCTYPE html><html><head></head><body>PLAIN-COLUMN</body></html>"), id);
+    const off = link(id, { scriptsOk: false });
+    assert.ok((await get(await docPath(off)).text()).includes("PLAIN-COLUMN"));
+    const on = link(id);
+    assert.ok((await get(await docPath(on)).text()).includes("<script>tb.ready()</script>"));
+  });
   it("the owner's preview of a page without scripts is the same scriptless render", async () => {
     const { id } = await dataPage(FREE_PAGE);
     const tok = link(id, { kind: "preview" });
@@ -306,7 +324,7 @@ describe("sanitized once at write time, stored per version (S6 review)", () => {
   });
   it("a row without the stored result (older row, restore) is sanitized at serve time", async () => {
     const id = await page();
-    db.prepare("UPDATE la_version SET html = ?, served_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from('<p>x</p><link rel="prerender" href="https://x.test/p">'), id);
+    db.prepare("UPDATE la_version SET html = ?, served_html = NULL, served_runs_scripts = NULL, served_plain_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from('<p>x</p><link rel="prerender" href="https://x.test/p">'), id);
     const html = await get(await docPath(link(id))).text();
     assert.ok(html.includes("<p>x</p>") && !html.includes("x.test"));
   });
@@ -324,7 +342,7 @@ describe("every served agent document is sanitized (C238)", () => {
   const HOSTILE =
     '<!doctype html><html><head><link rel="prerender" href="https://canary.test/p"><base href="https://canary.test/"><meta http-equiv="refresh" content="0;url=https://canary.test/m"></head>' +
     '<body><h1 id="m">marker</h1><img src="//canary.test/i.png"><script type="speculationrules">{"prerender":[{"source":"list","urls":["https://canary.test/s"]}]}</script><script>window.ran=1</script></body></html>';
-  const set = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ?, served_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+  const set = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ?, served_html = NULL, served_runs_scripts = NULL, served_plain_html = NULL WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
   it("a viewer link and an owner preview both get the page without outside markup, with the marker and the scripts", async () => {
     const id = await page();
     set(id, HOSTILE);

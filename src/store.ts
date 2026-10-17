@@ -4,7 +4,7 @@ import { digest, sha256Bytes, ulid } from "@opt2-tealbrick/manifest";
 import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { type Contract, type ContractInput, contractJson, parseStoredContract, sourceDigest } from "./contract.ts";
 import { LIMITS, utf8Bytes } from "./limits.ts";
-import { sanitizeHtml } from "./sanitize.ts";
+import { sanitizeForStore } from "./sanitize.ts";
 
 /** Manifest `scopes[].type` that guards artifacts. */
 export const GALLERY = "gallery";
@@ -301,16 +301,16 @@ function insertVersion(db: Db, id: string, n: number, html: string, contract: Co
   const bytes = Buffer.from(html, "utf8");
   const cj = contractJson(contract);
   // sanitize ONCE, here: the viewer serves the stored result (S6 review: a bomb must not cost CPU on the serve path)
-  let served: Buffer;
+  let served: ReturnType<typeof sanitizeForStore>;
   try {
-    served = Buffer.from(sanitizeHtml(html).html, "utf8");
+    served = sanitizeForStore(html);
   } catch (e) {
     throw new TbError("view_not_servable", `this page cannot be shown: ${e instanceof Error ? e.message : "it could not be checked"}. Keep it below ${SANITIZE_LIMITS_TEXT}.`, 422);
   }
   db.prepare(
-    `INSERT INTO la_version (artifact_id, n, html, html_sha256, contract_json, contract_sha256, bytes, created_by_type, created_by_id, created_by_name, note, created_at, served_html)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, n, bytes, sha256Bytes(bytes), JSON.stringify(cj), digest(cj), bytes.length, by.type, by.id, by.name, note, now, served);
+    `INSERT INTO la_version (artifact_id, n, html, html_sha256, contract_json, contract_sha256, bytes, created_by_type, created_by_id, created_by_name, note, created_at, served_html, served_runs_scripts, served_plain_html)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, n, bytes, sha256Bytes(bytes), JSON.stringify(cj), digest(cj), bytes.length, by.type, by.id, by.name, note, now, served.full, served.runsScripts ? 1 : 0, served.plain);
 }
 
 /** Keep the newest LIMITS.versionsKept versions plus the live, the staged and every version pinned by a link. */

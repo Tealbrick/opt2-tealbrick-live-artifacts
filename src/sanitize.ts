@@ -678,11 +678,29 @@ export function clearSanitizeCache(): void {
   cacheBytes = 0;
 }
 
-/** The sanitized document of a stored version: the result stored when it was written, else (an older row, a restore) sanitized
- *  now. Fails closed to the fixed document. */
-export function servedDocumentOf(row: Record<string, unknown>): string {
-  if (row.served_html !== null && row.served_html !== undefined) return Buffer.from(row.served_html as Uint8Array).toString("utf8");
-  return servedDocument(Buffer.from(row.html as Uint8Array).toString("utf8"));
+/** Everything sanitizing a version produces, to store with it when it is written (throws when the page cannot be served). */
+export function sanitizeForStore(html: string): { full: Buffer; runsScripts: boolean; plain: Buffer | null } {
+  const r = sanitizeHtml(html);
+  const plain = r.runsScripts ? Buffer.from(sanitizeHtml(html, { allowScripts: false }).html, "utf8") : null;
+  return { full: Buffer.from(r.html, "utf8"), runsScripts: r.runsScripts, plain };
+}
+const bytesText = (b: unknown): string => Buffer.from(b as Uint8Array).toString("utf8");
+const isStored = (row: Record<string, unknown>): boolean => row.served_html !== null && row.served_html !== undefined && row.served_runs_scripts !== null && row.served_runs_scripts !== undefined;
+
+/** The sanitized document of a stored version, scripts allowed, and whether it runs scripts: the result stored when the version
+ *  was written, else (an older row, a restore) sanitized now. Fails closed to the fixed document (no scripts). */
+export function versionServed(row: Record<string, unknown>): Served {
+  if (isStored(row)) return { html: bytesText(row.served_html), runsScripts: Number(row.served_runs_scripts) === 1 };
+  return servedDocumentInfo(bytesText(row.html));
+}
+/** The scriptless variant of a stored version (the page itself when it runs no scripts). */
+export function versionPlain(row: Record<string, unknown>): string {
+  if (isStored(row)) {
+    if (Number(row.served_runs_scripts) !== 1) return bytesText(row.served_html);
+    if (row.served_plain_html !== null && row.served_plain_html !== undefined) return bytesText(row.served_plain_html);
+  }
+  const full = servedDocumentInfo(bytesText(row.html));
+  return full.runsScripts ? servedDocumentInfo(bytesText(row.html), { allowScripts: false }).html : full.html;
 }
 
 /** THE call site for a served document: sanitized HTML and whether it runs scripts, or the fixed "cannot show this page"
