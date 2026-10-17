@@ -118,7 +118,7 @@ export function listLinks(db: Db, now: number) {
 const KIB = 1024;
 /** Agent-written text (titles, labels) in a hold: one line, no control characters, so it cannot fake lines of the hold text. */
 const clip = (s: string, n: number): string => {
-  const one = s.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/gu, " ").trim();
+  const one = s.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
