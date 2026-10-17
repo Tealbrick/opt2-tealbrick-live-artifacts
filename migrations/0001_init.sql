@@ -19,6 +19,7 @@ CREATE TABLE la_artifact (
   lease_until INTEGER,
   last_refresh_at INTEGER,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  consecutive_deferrals INTEGER NOT NULL DEFAULT 0,  -- rate-limited / budget ticks in a row (backoff + attention)
   refresh_job_id TEXT,                      -- the SDK job (kind refresh) that runs the approved schedule
   manual_refresh_at INTEGER,                -- last agent artifact_refresh (rate limit)
   created_by_type TEXT NOT NULL,

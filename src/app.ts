@@ -557,15 +557,19 @@ export function restartRefresh(db: Db, jobs: JobsApi, id: string, everySeconds: 
   const a = artifactRow(db, id);
   if (!a) return;
   const old = a.refresh_job_id === null ? null : String(a.refresh_job_id);
-  if (old) {
+  const cancelOld = () => {
+    if (!old) return;
     const j = jobs.get(old);
     if (j && ["queued", "waiting", "running", "paused"].includes(j.status)) jobs.cancel(old);
-  }
+  };
   if (everySeconds === null) {
     db.prepare("UPDATE la_artifact SET refresh_approved = 0, refresh_state = 'off', next_refresh_at = NULL, refresh_job_id = NULL WHERE id = ?").run(id);
+    cancelOld();
     return;
   }
+  // enqueue FIRST: if it throws, the old job still runs (it is fenced by refresh_job_id anyway; re-review finding 2)
   const job = jobs.enqueue(REFRESH_JOB, { id });
+  cancelOld();
   db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = 1, refresh_state = 'on', consecutive_failures = 0, next_refresh_at = ?, refresh_job_id = ? WHERE id = ?").run(
     everySeconds,
     now,
@@ -599,6 +603,8 @@ export const definition: SdkAppDefinition = {
     );
     if (stopped > 0) return { code: "refresh_stopped", reason: `${stopped} live page(s) stopped refreshing after repeated failures` };
     if (overdue > 0) return { code: "refresh_overdue", reason: `${overdue} live page(s) are more than 10 minutes late to refresh` };
+    const starved = Number(db.prepare("SELECT COUNT(*) AS c FROM la_artifact WHERE status = 'active' AND refresh_approved = 1 AND consecutive_deferrals >= 5").get()?.c ?? 0);
+    if (starved > 0) return { code: "refresh_rate_limited", reason: `${starved} live page(s) cannot refresh: the source app keeps asking Live Artifacts to slow down` };
     return null;
   },
   async onStart(ctx) {

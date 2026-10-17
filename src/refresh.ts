@@ -187,8 +187,6 @@ export async function refreshArtifact(db: Db, callApp: CallApp, id: string, opts
   const budget = budgets[opts.mode];
   const results: SourceResult[] = [];
   const pending: Pending[] = [];
-  let failed = false;
-  let paused = false;
   let deferred = false;
   for (const key of readKeys(db, id, opts.keys)) {
     if (opts.signal?.aborted) break; // a cancelled, paused or timed-out tick stops reading (finding 2)
@@ -221,36 +219,37 @@ export async function refreshArtifact(db: Db, callApp: CallApp, id: string, opts
       }
       if (v === undefined || text === undefined) {
         pending.push({ binding: b, status: "error", code: "projection_empty" });
-        failed = true;
         continue;
       }
       const bytes = utf8Bytes(text);
       if (bytes > LIMITS.snapshotBytes || otherBytes(db, id, key) + bytes > LIMITS.artifactDataBytes) {
         pending.push({ binding: b, status: "error", code: "data_too_large" });
-        failed = true;
         continue;
       }
       pending.push({ binding: b, status: "ok", code: null, data: JSON.parse(text) as Json });
     } catch (e) {
       const code = String(e instanceof TbError ? e.code : ((e as { code?: string })?.code ?? "refresh_error")).slice(0, 64);
       if (PAUSE_CODES.has(code)) {
-        paused = true;
         pending.push({ binding: b, status: "paused", code });
       } else if (DEFER_CODES.has(code)) {
         deferred = true;
         results.push({ key, status: "error", fetchedAt: null, code });
       } else {
-        failed = true;
         pending.push({ binding: b, status: "error", code });
       }
     }
   }
+  // an aborted tick records NOTHING (no success, no failure); the SDK resumes it (re-review finding 1)
+  if (opts.signal?.aborted) throw opts.signal.reason ?? new TbError("aborted", "refresh aborted", 503);
   const now = opts.now();
   const at = new Date(now).toISOString();
-  const outcome: RefreshOutcome = { results, failed, paused, deferred };
+  const outcome: RefreshOutcome = { results, failed: false, paused: false, deferred };
   write(() => {
     for (const p of pending) {
       const wrote = guardedWrite(db, id, p, now);
+      // only results that were really written count (a discarded read of a revoked source is no failure; finding 3)
+      if (wrote && p.status === "error") outcome.failed = true;
+      if (wrote && p.status === "paused") outcome.paused = true;
       results.push(
         wrote
           ? { key: p.binding.key, status: p.status, fetchedAt: p.status === "ok" ? at : null, code: p.status === "held" ? null : p.code }
@@ -288,11 +287,15 @@ export function recordTick(db: Db, id: string, jobId: string, o: Pick<RefreshOut
     state = "paused"; // a kill switch is not a failure
     nextAt = now + every * 1000;
   } else if (o.deferred) {
-    nextAt = now + Math.min(every * 1000, 60_000); // rate limit or budget: soon again, no failure counted
+    // rate limit or budget: no failure counted, but back off (1, 2, 4 … min, at most the interval) and show it
+    const deferrals = Number(a.consecutive_deferrals ?? 0) + 1;
+    db.prepare("UPDATE la_artifact SET consecutive_deferrals = ? WHERE id = ?").run(deferrals, id);
+    nextAt = now + Math.min(every * 1000, 60_000 * 2 ** Math.min(deferrals - 1, 10));
   } else {
     failures = 0;
     nextAt = now + every * 1000;
   }
+  if (!o.deferred) db.prepare("UPDATE la_artifact SET consecutive_deferrals = 0 WHERE id = ?").run(id);
   db.prepare(
     "UPDATE la_artifact SET refresh_state = ?, next_refresh_at = ?, last_refresh_at = ?, consecutive_failures = ? WHERE id = ? AND refresh_approved = 1 AND refresh_job_id = ?",
   ).run(state, nextAt, now, failures, id, jobId);

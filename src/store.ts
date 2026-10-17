@@ -450,7 +450,9 @@ export function updateArtifact(db: Db, id: string, u: UpdateArgs, now: number): 
       else {
         live = version;
         db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = NULL WHERE id = ?").run(version, id);
-        if (contractChanged) applyContract(db, id, contract, a, now);
+        // going live: the sources ALWAYS follow the live version's contract (a contract staged earlier may differ from
+        // the live sources even when this update changes only the HTML; re-review finding 4)
+        applyContract(db, id, contract, a, now);
       }
       pruneVersions(db, id, now);
     }

@@ -170,7 +170,7 @@ describe("the refresh job", () => {
     const { id, jobId } = await scheduled();
     assert.deepEqual(jobsLog, [`enqueue ${REFRESH_JOB} {"id":"${id}"}`]);
     await run("trigger_approve", { id, everySeconds: 3600 }, O());
-    assert.deepEqual(jobsLog.slice(1), [`cancel ${jobId}`, `enqueue ${REFRESH_JOB} {"id":"${id}"}`]);
+    assert.deepEqual(jobsLog.slice(1), [`enqueue ${REFRESH_JOB} {"id":"${id}"}`, `cancel ${jobId}`], "the new job first, then the old one is cancelled");
     const off = await run("trigger_approve", { id, everySeconds: null }, O());
     assert.equal(off.refresh.state, "off");
     assert.equal(artifactRow(db, id)?.refresh_job_id, null);
@@ -312,14 +312,65 @@ describe("review of PR #3: regressions", () => {
     await inFlight;
     assert.equal(snap(id, "tasks"), undefined);
   });
-  it("finding 2: an aborted tick stops reading", async () => {
+  it("finding 2 + re-review 1: an aborted tick stops reading and records nothing (no success, no failure)", async () => {
     const id = await page();
     approve(id, "tasks");
     approve(id, "mem");
     const ac = new AbortController();
     ac.abort();
-    await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now, signal: ac.signal });
+    await assert.rejects(refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now, signal: ac.signal }));
     assert.deepEqual(calls, []);
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    db.prepare("UPDATE la_artifact SET consecutive_failures = 3 WHERE id = ?").run(id);
+    const before = artifactRow(db, id);
+    const ctx = { ...jobCtx(String(before?.refresh_job_id)), signal: ac.signal };
+    await assert.rejects(refreshTick({ id }, ctx as never));
+    const after = artifactRow(db, id);
+    assert.deepEqual([Number(after?.consecutive_failures), after?.next_refresh_at], [3, before?.next_refresh_at]);
+  });
+  it("re-review 2: restartRefresh enqueues before it cancels (a failed enqueue keeps the old job)", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    const oldJob = artifactRow(db, id)?.refresh_job_id;
+    const saved = fakeJobs.enqueue;
+    fakeJobs.enqueue = () => {
+      throw new Error("enqueue failed");
+    };
+    try {
+      jobsLog.length = 0;
+      await assert.rejects(run("trigger_approve", { id, everySeconds: 3600 }, O()));
+      assert.deepEqual(jobsLog, [], "the old job was not cancelled");
+      assert.equal(artifactRow(db, id)?.refresh_job_id, oldJob);
+    } finally {
+      fakeJobs.enqueue = saved;
+    }
+  });
+  it("re-review 3: a failing read of a source revoked meanwhile is not counted as a failure", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    answer = async () => {
+      await run("source_revoke", { id, key: "tasks" }, O());
+      throw new TbError("upstream_down", "x", 502);
+    };
+    await refreshTick({ id }, jobCtx(String(artifactRow(db, id)?.refresh_job_id)) as never);
+    assert.equal(Number(artifactRow(db, id)?.consecutive_failures), 0);
+  });
+  it("re-review 5: repeated rate limits back off and raise attention after 5 deferrals", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    answer = async () => Promise.reject(new TbError("rate_limited", "slow down", 429));
+    await run("trigger_approve", { id, everySeconds: 3600 }, O());
+    const jobId = String(artifactRow(db, id)?.refresh_job_id);
+    const gaps: number[] = [];
+    for (let n = 0; n < 5; n++) {
+      now = Math.max(now, Number(artifactRow(db, id)?.next_refresh_at ?? now));
+      const r = await refreshTick({ id }, jobCtx(jobId) as never);
+      gaps.push("afterMs" in r ? r.afterMs : -1);
+    }
+    assert.deepEqual(gaps, [60_000, 120_000, 240_000, 480_000, 960_000]);
+    assert.equal(((await definition.attention?.(db)) as { code: string } | null)?.code, "refresh_rate_limited");
   });
   it("finding 3: parallel artifact_refresh calls — exactly one runs", async () => {
     const id = await page();
