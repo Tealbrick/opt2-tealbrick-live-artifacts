@@ -26,11 +26,11 @@ const linkIdOf = (tok: string): string => String(db.prepare("SELECT id FROM la_l
 const run = async (opId: keyof typeof handlers, input: unknown, ctx: OpContext): Promise<Out> => (await handlers[opId].run(input as never, ctx)) as Out;
 
 const setHtml = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
-function link(id: string, opts: { pin?: number | null; expires?: number; revoked?: boolean; kind?: "viewer" | "preview" } = {}): string {
+function link(id: string, opts: { pin?: number | null; expires?: number; revoked?: boolean; kind?: "viewer" | "preview"; scriptsOk?: boolean } = {}): string {
   const token = newToken();
   db.prepare(
-    "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, revoked_at, pin_version) VALUES (?, ?, ?, ?, '', 'person', 'per_x', 'Owner', ?, ?, ?, ?)",
-  ).run(`lnk_${ulid(++seq)}`, id, opts.kind ?? "viewer", opaqueDigest(token), now, opts.expires ?? now + 86_400_000, opts.revoked ? now : null, opts.pin ?? null);
+    "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, revoked_at, pin_version, scripts_ok) VALUES (?, ?, ?, ?, '', 'person', 'per_x', 'Owner', ?, ?, ?, ?, ?)",
+  ).run(`lnk_${ulid(++seq)}`, id, opts.kind ?? "viewer", opaqueDigest(token), now, opts.expires ?? now + 86_400_000, opts.revoked ? now : null, opts.pin ?? null, opts.scriptsOk === false ? 0 : 1);
   return token;
 }
 async function page(): Promise<string> {
@@ -232,6 +232,23 @@ describe("scriptless render (C239)", () => {
     const d = (await get(`/v/live-artifacts/${tok}/data`).json()) as Out;
     assert.equal(d.scriptless, true);
     assert.equal(d.runsScripts, true, "the owner still sees that the page itself runs scripts");
+  });
+  it("fail closed: a link inserted WITHOUT an explicit script approval never runs scripts (scripts_ok defaults to 0)", async () => {
+    const id = await page();
+    setHtml(id, SCRIPT_PAGE);
+    const tok = newToken();
+    db.prepare(
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES (?, ?, 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
+    ).run(`lnk_${ulid(++seq)}`, id, opaqueDigest(tok), now, now + 86_400_000);
+    assert.equal(Number(db.prepare("SELECT scripts_ok FROM la_link WHERE token_digest = ?").get(opaqueDigest(tok))?.scripts_ok), 0);
+    const r = get(await docPath(tok));
+    assert.equal(r.headers.get("content-security-policy"), scriptlessDocumentCsp(CFG));
+    const html = await r.text();
+    assert.ok(!html.includes("<script") && !html.includes("onclick"), html);
+    assert.equal(((await get(`/v/live-artifacts/${tok}/data`).json()) as Out).scriptless, true);
+    // and only the explicit approval changes that
+    db.prepare("UPDATE la_link SET scripts_ok = 1 WHERE token_digest = ?").run(opaqueDigest(tok));
+    assert.equal(get(await docPath(tok)).headers.get("content-security-policy"), documentCsp(CFG));
   });
   it("the owner's preview of a page without scripts is the same scriptless render", async () => {
     const { id } = await dataPage(FREE_PAGE);

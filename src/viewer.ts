@@ -218,7 +218,7 @@ function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number)
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;
-  return { id: String(r.id), artifactId: String(r.artifact_id), kind: String(r.kind) as LinkRow["kind"], pinVersion: r.pin_version === null ? null : Number(r.pin_version), scriptsOk: Number(r.scripts_ok ?? 1) === 1 };
+  return { id: String(r.id), artifactId: String(r.artifact_id), kind: String(r.kind) as LinkRow["kind"], pinVersion: r.pin_version === null ? null : Number(r.pin_version), scriptsOk: Number(r.scripts_ok ?? 0) === 1 };
 }
 
 /** Owner preview: a 10-minute token for one version (default: the staged one if any, else the live one). */
@@ -236,8 +236,8 @@ export function createPreview(db: Db, artifactId: string, version: number | null
          (SELECT id FROM la_link WHERE kind = 'preview' AND artifact_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2)`,
     ).run(artifactId, PREVIEWS_PER_ARTIFACT - 1);
     db.prepare(
-      `INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version)
-       VALUES (?, ?, 'preview', ?, 'preview', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version, scripts_ok)
+       VALUES (?, ?, 'preview', ?, 'preview', ?, ?, ?, ?, ?, ?, 1)`,
     ).run(`lnk_${ulid(now)}`, artifactId, opaqueDigest(token), by.type, by.id, by.name, now, expiresAt, n);
   });
   return { token, version: n, expiresAt };

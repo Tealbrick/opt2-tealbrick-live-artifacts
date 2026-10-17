@@ -130,7 +130,7 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     ).run(Buffer.from(hostilePage(canary.origin), "utf8"), now);
     token = newToken();
     db.prepare(
-      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES ('lnk_01J00000000000000000000CAN', 'art_01J00000000000000000000CAN', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, scripts_ok) VALUES ('lnk_01J00000000000000000000CAN', 'art_01J00000000000000000000CAN', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?, 1)",
     ).run(opaqueDigest(token), now, now + 3_600_000);
     // a benign page with one push source shown to link viewers: the shell must render it and deliver the data
     db.prepare(
@@ -144,7 +144,7 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     db.prepare("INSERT INTO la_snapshot (artifact_id, key, data_json, bytes, fetched_at, status) VALUES ('art_01J00000000000000000000G0D', 'n', '{\"total\":42}', 12, ?, 'ok')").run(now);
     goodToken = newToken();
     db.prepare(
-      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES ('lnk_01J00000000000000000000G0D', 'art_01J00000000000000000000G0D', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, scripts_ok) VALUES ('lnk_01J00000000000000000000G0D', 'art_01J00000000000000000000G0D', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?, 1)",
     ).run(opaqueDigest(goodToken), now, now + 3_600_000);
     // a static document (no script) that tries every static way out; it must render, and reach nothing
     db.prepare(
@@ -161,7 +161,7 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     // the owner's preview of the benign page (framed by the owner UI on the "main" origin)
     previewToken = newToken();
     db.prepare(
-      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version) VALUES ('lnk_01J00000000000000000000PRV', 'art_01J00000000000000000000G0D', 'preview', ?, 'preview', 'person', 'per_x', 'Owner', ?, ?, 1)",
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, pin_version, scripts_ok) VALUES ('lnk_01J00000000000000000000PRV', 'art_01J00000000000000000000G0D', 'preview', ?, 'preview', 'person', 'per_x', 'Owner', ?, ?, 1, 1)",
     ).run(opaqueDigest(previewToken), now, now + 600_000);
     let cfg: ViewerConfig = { viewOrigin: null, mainOrigin: null, workspaceName: "Acme", docKey: "canary-doc-key" };
     views = await listen(async (req, res) => {

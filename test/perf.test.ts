@@ -74,7 +74,7 @@ describe("sanitizer and viewer document path on a 1 MiB page (target: under 50 m
     ).run(Buffer.from(htmlText, "utf8"), now);
     const token = newToken();
     db.prepare(
-      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES ('lnk_01J00000000000000000000BAG', 'art_01J00000000000000000000BIG', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, scripts_ok) VALUES ('lnk_01J00000000000000000000BAG', 'art_01J00000000000000000000BIG', 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?, 1)",
     ).run(opaqueDigest(token), now, now + 86_400_000);
     return token;
   }
