@@ -135,7 +135,7 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
     assert.match(shellCsp(CFG, true), /frame-ancestors https:\/\/bridge-abc\.up\.railway\.app/);
     assert.equal(r.headers.get("set-cookie"), null);
   });
-  it("document: sandbox (opaque origin), no network, framed only by the views origin", async () => {
+  it("document: sandbox (opaque origin), connect-src none, framed only by the views origin", async () => {
     const id = await page();
     const tok = link(id);
     const path = await docPath(tok);
@@ -147,8 +147,37 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
       assert.ok(csp.includes(d), d);
     assert.ok(!/allow-same-origin|allow-top-navigation|allow-popups|allow-forms/.test(csp), "no sandbox escape tokens");
     const html = await r.text();
-    assert.ok(html.startsWith("<!doctype html><script>"), "the helper is the first script, right after the doctype");
+    assert.ok(html.startsWith("<!DOCTYPE html><script>"), "the helper is the first script, right after the doctype");
     assert.ok(html.endsWith("<body>v1</body></html>"));
+  });
+});
+
+describe("every served agent document is sanitized (C238)", () => {
+  const HOSTILE =
+    '<!doctype html><html><head><link rel="prerender" href="https://canary.test/p"><base href="https://canary.test/"><meta http-equiv="refresh" content="0;url=https://canary.test/m"></head>' +
+    '<body><h1 id="m">marker</h1><img src="//canary.test/i.png"><script type="speculationrules">{"prerender":[{"source":"list","urls":["https://canary.test/s"]}]}</script><script>window.ran=1</script></body></html>';
+  const set = (id: string, html: string): void => void db.prepare("UPDATE la_version SET html = ? WHERE artifact_id = ? AND n = 1").run(Buffer.from(html, "utf8"), id);
+  it("a viewer link and an owner preview both get the page without outside markup, with the marker and the scripts", async () => {
+    const id = await page();
+    set(id, HOSTILE);
+    for (const kind of ["viewer", "preview"] as const) {
+      const tok = link(id, { kind });
+      const r = get(await docPath(tok));
+      assert.equal(r.status, 200);
+      const html = await r.text();
+      assert.ok(!html.includes("canary.test"), `${kind}: ${html}`);
+      assert.ok(!/<link|<base|http-equiv|speculationrules/i.test(html), kind);
+      assert.ok(html.includes('<h1 id="m">marker</h1>') && html.includes("window.ran=1"), kind);
+      assert.ok(html.includes(TB_HELPER), "the helper is still injected");
+    }
+  });
+  it("a page that cannot be made safe is replaced by the fixed document, with the same headers", async () => {
+    const id = await page();
+    set(id, "<div>".repeat(5000));
+    const r = get(await docPath(link(id)));
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("content-security-policy"), documentCsp(CFG));
+    assert.match(await r.text(), /This page cannot be shown/);
   });
 });
 

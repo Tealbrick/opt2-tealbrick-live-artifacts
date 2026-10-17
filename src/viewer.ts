@@ -14,6 +14,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
+import { servedDocument } from "./sanitize.ts";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
@@ -97,7 +98,7 @@ export function shellCsp(cfg: ViewerConfig, preview: boolean): string {
     `frame-ancestors ${ancestors}`,
   ].join("; ");
 }
-/** CSP of the agent document: an opaque origin even when opened directly, no network, framed only by the shell (views
+/** CSP of the agent document: an opaque origin even when opened directly, no cookies or storage, connect-src none, framed only by the shell (views
  *  origin; for a preview also the owner UI above the shell — frame-ancestors checks EVERY ancestor, finding 2). */
 export function documentCsp(cfg: ViewerConfig, preview = false): string {
   const ancestors = [cfg.viewOrigin ?? "'none'", ...(preview && cfg.mainOrigin ? [cfg.mainOrigin] : [])].join(" ");
@@ -277,7 +278,8 @@ export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: numbe
     if (!link || t.n !== versionFor(db, link)) return notFound(); // a link reads its own version only
     const v = versionRow(db, link.artifactId, t.n);
     if (!v) return notFound();
-    const html = injectHelper(Buffer.from(v.html as Uint8Array).toString("utf8"));
+    // every agent document is sanitized on the way out (C238): owner preview and public link share this one call
+    const html = injectHelper(servedDocument(Buffer.from(v.html as Uint8Array).toString("utf8")));
     return respond(200, html, "text/html; charset=utf-8", documentCsp(cfg, link.kind === "preview"));
   }
   const link = resolveToken(db, rest[0] ?? "", now);

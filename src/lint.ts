@@ -67,14 +67,14 @@ export function lintHtml(html: string): LintItem[] {
   if (external.length > 0)
     err(
       "external_resource",
-      `The page loads ${external.length} outside file(s) (first: ${external[0]?.slice(0, 80)}). Pages have no network: inline scripts, styles and images (data: URLs).`,
+      `The page loads ${external.length} outside file(s) (first: ${external[0]?.slice(0, 80)}). Outside files are removed when the page is shown: inline scripts, styles and images (data: URLs).`,
     );
   const relative = urls.filter((u) => u && isRelative(u));
   if (relative.length > 0) advice("relative_resource", `The page names ${relative.length} other file(s) (first: ${relative[0]?.slice(0, 80)}). A page is one file; these do not load.`);
 
   const outsideLinks = links.filter(isExternal);
   if (outsideLinks.length > 0) advice("outside_link", `The page links to ${outsideLinks.length} outside address(es). Links cannot open from a live page.`);
-  if (NETWORK_API.test(html)) advice("network_api", "The page uses a network API (fetch, XMLHttpRequest, WebSocket …). Pages have no network; use tb.onData(cb) to get your data.");
+  if (NETWORK_API.test(html)) advice("network_api", "The page uses a network API (fetch, XMLHttpRequest, WebSocket …). Do not send data to outside sites; use tb.onData(cb) to get your data.");
   if (FORM_TAG.test(html)) advice("form", "Forms cannot submit on a live page.");
   return out;
 }

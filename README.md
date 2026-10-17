@@ -4,7 +4,7 @@ A Tealbrick opt2 mini app (product id `live-artifacts`), built on `@opt2-tealbri
 
 Live Artifacts keeps an agent's report or dashboard as a page: one self-contained HTML file written against a fixed
 contract, with versions, data sources the owner approves once, and (later) a refresh schedule and viewer links the
-owner controls. Pages run sandboxed with no network; values read from other apps are shown to the owner, never
+owner controls. Pages run in a sandbox: a page cannot read your Tealbrick data or session. In some browsers it can contact outside sites, so do not type private information into it. Values read from other apps are shown to the owner, never
 returned to agents. Design: `coordination/leads/live-artifacts/DESIGN.md` (internal).
 
 `tealbrick.manifest.json` is the only description of the app. The SDK derives the routes, input and output

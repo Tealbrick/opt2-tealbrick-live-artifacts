@@ -486,7 +486,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 <p className="tb-soft">
                   Version {detail.version.n} is live: {Math.max(1, Math.round(detail.version.bytes / KIB))} KiB, written by {detail.version.createdBy.name} on {stamp(detail.version.createdAt)}. The preview on the page shows it as a viewer would see it.
                 </p>
-                <p className="tb-soft">The page cannot send data anywhere or load files from the network. A viewer can still copy what is on screen.</p>
+                <p className="tb-soft">The page cannot read your Tealbrick data or session. In some browsers it can contact outside sites. Do not type private information into it. A viewer can still copy what is on screen.</p>
                 {detail.lint.length > 0 ? (
                   <ul className="tb-list">
                     {detail.lint.map((l) => (
@@ -569,7 +569,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                       <span className="tb-stack">
                         <b>What a link cannot promise</b>
                         <ul className="la-advice">
-                          <li>The page cannot send data over the network. In some browsers a very small signal can still get out, for example the names the page looks up or the set-up of a video call. That needs page code written for it and a viewer who opens the page.</li>
+                          <li>The page cannot read your Tealbrick data or session. In some browsers page code can contact outside sites, so a viewer who opens the page can send a signal to whoever wrote it. Do not type private information into a page. Outside files in the page markup are removed before it is shown.</li>
                           <li>Everything the page shows can be copied by whoever sees it.</li>
                           <li>A new version or new numbers from an agent wait for you before link holders see them. You can switch that off on the page.</li>
                         </ul>

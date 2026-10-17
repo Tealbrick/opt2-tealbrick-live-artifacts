@@ -129,7 +129,7 @@ export const SHELL_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
 <title>Live page</title><link rel="stylesheet" href="/v/live-artifacts/${TOKENS_CSS_PATH}"><link rel="stylesheet" href="/v/live-artifacts/${SHELL_CSS_PATH}"></head>
 <body><header><h1 id="title">Loading…</h1><p id="by"></p><p id="fresh"></p></header><p id="note" role="status" hidden></p>
-<main id="stage"></main><footer>Tealbrick Live Artifacts. The page above runs in a sandbox with no network.</footer>
+<main id="stage"></main><footer>Tealbrick Live Artifacts. The page above cannot read your Tealbrick data or session. In some browsers it can contact outside sites. Do not type private information into it.</footer>
 <script src="/v/live-artifacts/${SHELL_JS_PATH}"></script></body></html>`;
 
 /** Insert the tb helper as the first script: right after a LEADING doctype, else at the very start. Never searches the

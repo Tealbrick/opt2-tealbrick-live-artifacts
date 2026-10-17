@@ -14,6 +14,9 @@ importers:
       '@opt2-tealbrick/miniapp-sdk':
         specifier: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.27/opt2-tealbrick-miniapp-sdk-0.1.27.tgz
         version: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.27/opt2-tealbrick-miniapp-sdk-0.1.27.tgz(react@19.3.0)
+      parse5:
+        specifier: 7.3.0
+        version: 7.3.0
     devDependencies:
       '@biomejs/biome':
         specifier: 2.5.15
@@ -121,7 +124,7 @@ packages:
         optional: true
 
   '@opt2-tealbrick/spec@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.44/opt2-tealbrick-spec-0.1.44.tgz':
-    resolution: {integrity: sha512-23jsLgCuQ929eVRcAG6NM468znkUNsKgo2ZCWDQU8TFj5hfoVi1ctZOAZ29VLrhsAwpIJsiq+ZuZ36Wu8XoLjw==, tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.44/opt2-tealbrick-spec-0.1.44.tgz}
+    resolution: {tarball: https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-specs-spec-v0.1.44/opt2-tealbrick-spec-0.1.44.tgz}
     version: 0.1.44
 
   '@opt2-tealbrick/ui@https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-packages-ui-v0.3.0/opt2-tealbrick-ui-0.3.0.tgz':
@@ -278,6 +281,10 @@ packages:
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
+  entities@6.0.1:
+    resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
+    engines: {node: '>=0.12'}
+
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
@@ -294,6 +301,9 @@ packages:
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
+
+  parse5@7.3.0:
+    resolution: {integrity: sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw==}
 
   react-dom@19.3.0:
     resolution: {integrity: sha512-JDk8dgif51OjFoDE70+OT9ICyYr+69HlmihNwp1+Nsfbna3t5sIiCa9ZJktDmQ4/1b/rn26hIAR2uYXDMr5r0Q==}
@@ -489,6 +499,8 @@ snapshots:
 
   csstype@3.2.3: {}
 
+  entities@6.0.1: {}
+
   entities@7.0.1: {}
 
   fast-deep-equal@3.1.3: {}
@@ -509,6 +521,10 @@ snapshots:
       - utf-8-validate
 
   json-schema-traverse@1.0.0: {}
+
+  parse5@7.3.0:
+    dependencies:
+      entities: 6.0.1
 
   react-dom@19.3.0(react@19.3.0):
     dependencies:
