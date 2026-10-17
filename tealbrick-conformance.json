@@ -39,7 +39,8 @@
       },
       "capture": {
         "shaA": "/version/sha256",
-        "verA": "/version/n"
+        "verA": "/version/n",
+        "srcA": "/shareExpect/sourcesSha256"
       }
     }
   ],
@@ -77,7 +78,9 @@
       "expect": {
         "version": "${verA}",
         "htmlSha256": "${shaA}",
-        "title": "Conformance page"
+        "title": "Conformance page",
+        "data": [],
+        "sourcesSha256": "${srcA}"
       }
     },
     "artifact_publish": {

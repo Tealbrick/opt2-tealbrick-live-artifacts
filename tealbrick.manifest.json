@@ -422,7 +422,8 @@
         "additionalProperties": false,
         "required": [
           "artifact",
-          "version"
+          "version",
+          "shareExpect"
         ],
         "properties": {
           "artifact": {
@@ -1065,6 +1066,66 @@
           },
           "data": {
             "type": "object"
+          },
+          "shareExpect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version",
+              "htmlSha256",
+              "title",
+              "data",
+              "sourcesSha256"
+            ],
+            "description": "What artifact_share needs as expect for the version returned here (a link would show this version): copy it as it is.",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "data": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "Every push source that link viewers see (approved, shown to people with a link): its key and the sha256 of its data as it is now, or \"none\" if it has no data yet. An empty list when no push source is shown.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
+                  }
+                }
+              },
+              "sourcesSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
           }
         }
       },
@@ -1900,7 +1961,7 @@
       "scopeType": "gallery",
       "id": "artifact_share",
       "title": "Share a live page with a link",
-      "description": "Ask for a viewer link to a live page: anyone who has the link can open the page without an account until it ends or the owner revokes it. Read the page first with artifact_get and pass what you saw in expect (version, htmlSha256, title): the owner approves that page, and the call is refused with page_changed (409) if the page changed before it runs. The owner approves the link first (hold family public_link). The link address is in the answer of the approved retry only; repeat the same call with the same idempotency key after approval (the SDK keeps that answer sealed for 24 hours). At most 5 active links per page and 50 per workspace. Answers link_needs_hold (403) while your card does not hold public_link, and view_origin_missing (409) while the bridge has no viewer address.",
+      "description": "Ask for a viewer link to a live page: anyone who has the link can open the page without an account until it ends or the owner revokes it. Read the page first with artifact_get (with version = your pin, if any) and pass its shareExpect as expect: the owner approves that page, and the call is refused with page_changed (409) if the page changed before it runs. The owner approves the link first (hold family public_link). The link address is in the answer of the approved retry only; repeat the same call with the same idempotency key after approval (the SDK keeps that answer sealed for 24 hours). At most 5 active links per page and 50 per workspace. Answers link_needs_hold (403) while your card does not hold public_link, and view_origin_missing (409) while the bridge has no viewer address.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1946,9 +2007,11 @@
             "required": [
               "version",
               "htmlSha256",
-              "title"
+              "title",
+              "data",
+              "sourcesSha256"
             ],
-            "description": "The page as you saw it with artifact_get: the version the link will show (the pinned one, else the live one), that version's sha256, and the page title. The owner approves exactly this page; if it changed before the call runs, the call is refused with page_changed.",
+            "description": "The page as artifact_get shows it in shareExpect: the version the link will show (the pinned one, else the live one), that version's sha256, the title, the pushed data link viewers would see, and the fingerprint of the data sources. Pass shareExpect as it is. The owner approves exactly this page; if any of it changed before the call runs (even after the owner approved), the call is refused with page_changed.",
             "properties": {
               "version": {
                 "type": "integer",
@@ -1964,6 +2027,38 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 80
+              },
+              "data": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "Every push source that link viewers see (approved, shown to people with a link): its key and the sha256 of its data as it is now, or \"none\" if it has no data yet. An empty list when no push source is shown.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    }
+                  }
+                }
+              },
+              "sourcesSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "The fingerprint of the page's list of data sources (labels, kinds, which ones link viewers see)."
               }
             }
           }

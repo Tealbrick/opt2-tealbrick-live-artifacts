@@ -4,6 +4,7 @@
 import { digest, opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { parseStoredContract, sourceDigest } from "./contract.ts";
+import { type ShareExpect, shareMismatch, visiblePushData } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
 import { type Actor, activeLinkCount, artifactRow, getSettings, logActivity, notFound, type PublishExpect, pageChanged, versionRow } from "./store.ts";
 import { newToken } from "./viewer.ts";
@@ -28,7 +29,7 @@ export interface CreateLinkArgs {
   pin?: number | null | undefined;
   /** an agent's link: the page the owner approved (the version it shows, its sha256 and the title); refused with
    *  page_changed when the page is not exactly that any more. The owner's own link has no `expect`. */
-  expect?: { version: number; htmlSha256: string; title: string } | undefined;
+  expect?: ShareExpect | undefined;
   by: Actor;
 }
 export interface CreatedLink {
@@ -50,9 +51,8 @@ export function createLink(db: Db, a: CreateLinkArgs, now: number): CreatedLink 
     const pin = a.pin ?? null;
     if (pin !== null && !versionRow(db, a.artifactId, pin)) throw new TbError("version_unknown", `version ${pin} does not exist (it may have been pruned)`, 404);
     if (a.expect) {
-      const shown = pin ?? Number(art.live_version);
-      const v = versionRow(db, a.artifactId, shown);
-      if (!v || a.expect.version !== shown || a.expect.htmlSha256 !== String(v.html_sha256) || a.expect.title !== String(art.title)) throw pageChanged("the page");
+      const diff = shareMismatch(db, a.artifactId, pin, a.expect);
+      if (diff.length > 0) throw pageChanged(`the page (${diff.join(", ")})`);
     }
     if (activeLinkCount(db, a.artifactId, now) >= LIMITS.linksPerArtifact)
       throw new TbError("links_limit_artifact", `a page has at most ${LIMITS.linksPerArtifact} active links; revoke one first`, 409);
@@ -138,10 +138,10 @@ const kib = (bytes: number): string => `${Math.max(1, Math.round(bytes / KIB))} 
 const shortDigest = (d: string): string => `${d.replace(/^sha256:/, "").slice(0, 16)}…`;
 const NAME_MAX = 60;
 
-/** One source in the words the owner reads: its label and what it is. */
+/** One source in the words the owner reads: its quoted label and what it is (all agent-written text is quoted). */
 function sourceLine(s: Row): string {
-  const label = clip(String(s.label || s.key), 60);
-  return s.kind === "push" ? `${label} (data pushed by an agent)` : `${label} (${clip(String(s.product), 32)} ${clip(String(s.op), 64)})`;
+  const label = quote(String(s.label || s.key), 60);
+  return s.kind === "push" ? `${label} (data pushed by an agent)` : `${label} (${quote(String(s.product), 32)} ${quote(String(s.op), 64)})`;
 }
 /** Sources the viewer links of this page show (approved and marked "show to people with a link") and the ones they do not. */
 function sourcesShown(db: Db, artifactId: string): { shown: string[]; hidden: string[] } {
@@ -161,11 +161,12 @@ export interface ShareHoldInput {
   label?: string | undefined;
   expiresInDays?: number | undefined;
   pin?: number | null | undefined;
-  expect?: { version: number; htmlSha256: string; title: string } | undefined;
+  expect?: ShareExpect | undefined;
 }
 /** What the owner reads before approving `artifact_share`: the page (title, version, size, sha256, author), who gets it,
  *  how long, which data. `viewerMissing`: the app saw that the bridge has no viewer address (the SDK gives a hold view
- *  only the input, so this is the last answer seen on any call). */
+ *  only the input, so this is the last answer seen on any call). A request that is not the page as it is now starts with
+ *  "Do not approve" (and the app refuses it when it runs, whatever the page is by then). */
 export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { viewerMissing?: boolean } = {}): string {
   const a = artifactRow(db, i.id);
   if (!a) return `Create a public link to the live page ${i.id}.`;
@@ -177,7 +178,10 @@ export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { vi
   const showsN = pin ?? live;
   const v = versionRow(db, i.id, showsN);
   const have = activeLinkCount(db, i.id, now);
+  const e = i.expect;
+  const diff = e ? shareMismatch(db, i.id, pin, e) : [];
   const lines: string[] = [];
+  if (diff.length > 0) lines.push("Do not approve: this is not the page as it is now.");
   if (opts.viewerMissing) lines.push("This page cannot be shared yet (no viewer address); approving changes nothing.");
   lines.push(
     `Create a public link to the live page ${quote(String(a.title), 80)}, made by ${quote(String(a.created_by_name), NAME_MAX)}.`,
@@ -192,21 +196,25 @@ export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { vi
     else if (pin !== null && pin > live) lines.push(`Version ${pin} is newer than the live version (now version ${live}) and has not been reviewed yet.`);
     else if (pin !== null && pin < live) lines.push(`Version ${pin} is older than the live version (now version ${live}).`);
   }
-  if (String(a.auto_publish) === "agent") lines.push("Later agent changes go live on this link WITHOUT your approval (you allowed that for this page).");
-  const e = i.expect;
+  if (String(a.auto_publish) === "agent") lines.push("At the time of this request: later agent changes go live on this link WITHOUT your approval (you allowed that for this page).");
   if (e) {
-    const same = v !== undefined && e.version === showsN && e.htmlSha256 === String(v.html_sha256) && e.title === String(a.title);
     lines.push(
-      same
-        ? "The agent saw exactly this page. If the page changes before the call runs, the call is refused (page_changed)."
-        : `The agent saw version ${e.version}, sha256 ${shortDigest(e.htmlSha256)}, title ${quote(e.title, 80)}. That is not the page as it is now; the call will be refused (page_changed).`,
+      diff.length === 0
+        ? "The agent saw exactly this page, this data and these data sources. If any of it changes before the call runs, the call is refused (page_changed)."
+        : `The agent saw something else (it differs in: ${diff.join(", ")}). The agent asked for version ${e.version}, sha256 ${shortDigest(e.htmlSha256)}, title ${quote(e.title, 80)}. The call is refused (page_changed), whatever the page is later.`,
     );
   }
   lines.push(
     `The page shows these data sources to people with the link: ${listOr(shown, "none (it shows no data from your apps)")}.`,
     `It does not show: ${listOr(hidden, "nothing else")}.`,
+  );
+  // the pushed data link viewers would see, exactly as it is now (the call is bound to it)
+  for (const d of visiblePushData(db, i.id)) {
+    lines.push(`Pushed data ${quote(d.label, 60)} (key ${d.key}) is shown as it is now: ${d.sha256 === "none" ? "no data yet" : `${kib(d.bytes)}, sha256 ${shortDigest(d.sha256)}`}.`);
+  }
+  lines.push(
     "Page code written by an AI agent runs in the viewer's browser without network access. A viewer can still copy what is on screen.",
-    `${plural(have, "link")} of this page ${have === 1 ? "is" : "are"} active now (at most ${LIMITS.linksPerArtifact}).`,
+    `At the time of this request ${plural(have, "link")} of this page ${have === 1 ? "is" : "are"} active (at most ${LIMITS.linksPerArtifact}).`,
   );
   return lines.join("\n");
 }
@@ -217,6 +225,30 @@ export interface PublishHoldInput {
   data?: readonly { key: string; digest: string }[] | undefined;
   expect?: PublishExpect | undefined;
 }
+/** What differs between the page now and what an `artifact_publish` asks for; [] when the call would run. */
+export function publishMismatch(db: Db, i: PublishHoldInput): string[] {
+  const a = artifactRow(db, i.id);
+  if (!a) return ["page"];
+  const v = versionRow(db, i.id, i.version);
+  if (!v) return ["version"];
+  const out: string[] = [];
+  const e = i.expect;
+  if (e && e.htmlSha256 !== String(v.html_sha256)) out.push("page code");
+  const staged = a.staged_version === null ? null : Number(a.staged_version);
+  const goesWith = staged === null || staged === i.version;
+  for (const [field, now_, want] of [
+    ["title", a.staged_title, e?.title],
+    ["description", a.staged_description, e?.description],
+  ] as const) {
+    if (want !== undefined && (now_ === null || String(now_) !== want || !goesWith)) out.push(`staged ${field}`);
+  }
+  for (const d of i.data ?? []) {
+    const r = db.prepare("SELECT staged_json FROM la_snapshot WHERE artifact_id = ? AND key = ? AND staged_json IS NOT NULL").get(i.id, d.key);
+    if (!r || digest(JSON.parse(String(r.staged_json)) as Json) !== d.digest) out.push(`staged data ${d.key}`);
+  }
+  return out;
+}
+
 /** What the owner reads before approving `artifact_publish`: what becomes visible to link holders, and what changes. */
 export function publishHoldText(db: Db, i: PublishHoldInput, now: number): string {
   const a = artifactRow(db, i.id);
@@ -227,6 +259,8 @@ export function publishHoldText(db: Db, i: PublishHoldInput, now: number): strin
   const links = activeLinkCount(db, i.id, now);
   const e = i.expect;
   const lines = [`Change what ${links === 0 ? "viewers" : plural(links, "active link")} of the live page ${quote(String(a.title), 80)} show${links === 1 ? "s" : ""}.`];
+  // a request that is not what the page is now is refused when it runs, whatever the page is by then
+  if (publishMismatch(db, i).length > 0) lines.unshift("Do not approve: this is not the page as it is now.");
   if (!v) lines.push(`Version ${i.version} does not exist (it may have been pruned). The call will be refused.`);
   else {
     if (i.version === live) lines.push(`The live version stays version ${live}.`);

@@ -12,7 +12,7 @@
 // only; `include: data` returns the agents' own pushed data.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { CrudAction } from "@opt2-tealbrick/manifest";
+import { type CrudAction, digest } from "@opt2-tealbrick/manifest";
 import type { JobContext, JobsApi } from "@opt2-tealbrick/miniapp-sdk";
 import {
   type AppDefinition,
@@ -60,8 +60,9 @@ import {
   type TriggerApproveInput,
 } from "#kit";
 import { companionOps, EMPTY_CONTRACT, normalizeContract, parseStoredContract, type RawContract } from "./contract.ts";
+import { flagHold, holdFlagged, shareExpectOf, shareMismatch } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
-import { createLink, galleryOfLink, listLinks, publishHoldText, revokeLink, shareHoldText } from "./links.ts";
+import { createLink, galleryOfLink, listLinks, publishHoldText, publishMismatch, revokeLink, shareHoldText } from "./links.ts";
 import { type LintItem, lintErrors, lintHtml } from "./lint.ts";
 import { project, REFRESH_JOB, recordTick, refreshArtifact } from "./refresh.ts";
 import {
@@ -76,6 +77,7 @@ import {
   linksOf,
   listArtifacts,
   notFound,
+  pageChanged,
   publishVersion,
   pushedDataOf,
   putData,
@@ -243,6 +245,31 @@ const sayArtifact = (i: { id: string }) => `page ${i.id}`;
 /** Receipt text for a link op: the page title, never an address or a token. */
 const titleOf = (id: string): string => String((scopeDb ? artifactRow(scopeDb, id)?.title : undefined) ?? id).slice(0, 80);
 
+/** S4 review F3: a link request that is not the page as it is now is refused BEFORE a hold exists, where the caller already
+ *  knows the page (it is in the caller's own gallery, or the caller made it). The scope resolver runs before the hold
+ *  decision, so no hold appears. For any other caller this would tell a stranger whether a page exists (an unreachable page
+ *  must look like a missing one: scope_denied), so the call goes on to the scope check and a hold; that hold starts with
+ *  "Do not approve" and its input is flagged, so even an approval of it is refused when it runs. */
+function refuseBeforeHold(id: string, caller: { id: string }, diff: () => string[]): void {
+  const r = scopeDb ? artifactRow(scopeDb, id) : undefined;
+  if (!r || (String(r.gallery_id) !== caller.id && String(r.created_by_id) !== caller.id)) return;
+  const d = diff();
+  if (d.length > 0) throw pageChanged(`the page (${d.join(", ")})`);
+}
+/** Render side of F3: remember an input whose hold was rendered on a mismatch. */
+function flagMismatch(input: Json, diff: string[]): void {
+  if (diff.length === 0 || !scopeDb) return;
+  try {
+    flagHold(scopeDb, digest(input), clock());
+  } catch {
+    // a hold view must never throw; the run-time check of expect still refuses the call
+  }
+}
+/** Run side of F3: an approved hold that was rendered on a mismatch never runs. */
+function refuseFlagged(db: Db, input: Json): void {
+  if (holdFlagged(db, digest(input))) throw new TbError("page_changed", "the owner was told not to approve this request (it did not match the page); ask again with the page as it is now", 409);
+}
+
 /** DESIGN §3.1, spec PORTAL-API (hold family public_link): an app that offers links refuses an AGENT (or app) link op when
  *  the verified grant does not hold `public_link`, until the owner accepts the offer. Fail closed: no grant, or a grant
  *  without the family in `held`, is a refusal. The SDK holds the call when the family IS in `held`; this guard is for the
@@ -294,6 +321,8 @@ export const handlers = {
         ...(include.has("links") ? { links: linksOf(ctx.db, i.id, now) } : {}),
         ...(include.has("shape") ? { shape: shapesOf(ctx.db, i.id) } : {}),
         ...(include.has("data") ? { data: pushedDataOf(ctx.db, i.id) } : {}),
+        // what artifact_share needs as `expect` for a link that shows this version (copy it as it is)
+        shareExpect: shareExpectOf(ctx.db, i.id, n),
       };
     },
   }),
@@ -417,11 +446,19 @@ export const handlers = {
     },
   }),
   [OP.artifactShare]: op<ArtifactShareInput, unknown>({
-    scope: (i) => galleryOfArtifact(i.id),
+    scope: (i, caller) => {
+      refuseBeforeHold(i.id, caller, () => shareMismatch(scopeDb as Db, i.id, i.pin, i.expect));
+      return galleryOfArtifact(i.id);
+    },
     redact: (i) => `share page "${titleOf(i.id)}" with a link`,
-    holdView: (i) => (scopeDb ? shareHoldText(scopeDb, i, clock(), { viewerMissing: viewUrlSeen === null }) : `Create a public link to the live page ${i.id}.`),
+    holdView: (i) => {
+      if (!scopeDb) return `Create a public link to the live page ${i.id}.`;
+      flagMismatch(i as unknown as Json, shareMismatch(scopeDb, i.id, i.pin, i.expect));
+      return shareHoldText(scopeDb, i, clock(), { viewerMissing: viewUrlSeen === null });
+    },
     async run(i, ctx) {
       needLinkHold(ctx);
+      refuseFlagged(ctx.db, i as unknown as Json);
       const base = viewBase(ctx);
       const by = await prepare(ctx);
       await needArtifact(ctx, i.id, "create");
@@ -433,11 +470,19 @@ export const handlers = {
     },
   }),
   [OP.artifactPublish]: op<ArtifactPublishInput, unknown>({
-    scope: (i) => galleryOfArtifact(i.id),
+    scope: (i, caller) => {
+      refuseBeforeHold(i.id, caller, () => publishMismatch(scopeDb as Db, i));
+      return galleryOfArtifact(i.id);
+    },
     redact: (i) => `page "${titleOf(i.id)}": version ${i.version} live${i.data?.length ? `, data ${i.data.map((d) => d.key).join(", ")}` : ""}`,
-    holdView: (i) => (scopeDb ? publishHoldText(scopeDb, i, clock()) : `Change what the people who hold a link to ${i.id} see.`),
+    holdView: (i) => {
+      if (!scopeDb) return `Change what the people who hold a link to ${i.id} see.`;
+      flagMismatch(i as unknown as Json, publishMismatch(scopeDb, i));
+      return publishHoldText(scopeDb, i, clock());
+    },
     async run(i, ctx) {
       needLinkHold(ctx);
+      refuseFlagged(ctx.db, i as unknown as Json);
       const by = await prepare(ctx);
       const a = await needArtifact(ctx, i.id, "update");
       if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);

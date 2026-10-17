@@ -28,6 +28,8 @@ interface World {
   ins: `ins_${string}`;
   per: `per_${string}`;
   agent: `agt_${string}`;
+  /** a second agent that did not make the pages (it reaches the shared gallery only) */
+  agent2: `agt_${string}`;
 }
 
 interface Booted {
@@ -48,7 +50,7 @@ interface Booted {
 async function boot(viewUrl: string | null, opts: { paused?: boolean } = {}): Promise<Booted> {
   const [root, portal, bridgeKey] = await Promise.all([generateKeyPair(), generateKeyPair(), generateKeyPair()]);
   const keySet = await signKeySetStatement({ iss: "tb:portal-root", aud: "tb:portal-keys", seq: 1, iat: nowS(), keys: [{ jwk: portal.publicJwk, status: "active" }] }, root);
-  const w: World = { root, portal, bridgeKey, keySet, ws: `ws_${ulid()}`, brg: `brg_${ulid()}`, ins: `ins_${ulid()}`, per: `per_${ulid()}`, agent: `agt_${ulid()}` };
+  const w: World = { root, portal, bridgeKey, keySet, ws: `ws_${ulid()}`, brg: `brg_${ulid()}`, ins: `ins_${ulid()}`, per: `per_${ulid()}`, agent: `agt_${ulid()}`, agent2: `agt_${ulid()}` };
   const self = `tb:ins:${w.ins}` as const;
   const slice = await signSlice(
     {
@@ -67,7 +69,10 @@ async function boot(viewUrl: string | null, opts: { paused?: boolean } = {}): Pr
       revoked: { jtis: [] },
       personNbf: 0,
       grants: [],
-      agents: [{ id: w.agent, name: "Scout", mode: "free", status: "active" }],
+      agents: [
+        { id: w.agent, name: "Scout", mode: "free", status: "active" },
+        { id: w.agent2, name: "Clerk", mode: "free", status: "active" },
+      ],
       portalKeySet: keySet,
     } as Parameters<typeof signSlice>[0],
     portal,
@@ -171,11 +176,11 @@ async function boot(viewUrl: string | null, opts: { paused?: boolean } = {}): Pr
 
 const PAGE = { title: "Weekly operations", view: { html: "<!doctype html><html><body><h1>v1</h1></body></html>" } };
 
-/** What the agent saw with artifact_get: the version a link would show (the pin, else the live one), its sha256, the title. */
-async function looked(b: Booted, id: string, pin?: number): Promise<{ version: number; htmlSha256: string; title: string }> {
-  const g = await b.call("artifact_get", { id, ...(pin ? { version: pin } : {}) }, { held: [] });
+/** What the agent saw with artifact_get: `shareExpect`, ready to pass as `expect` (for the version a link would show). */
+async function looked(b: Booted, id: string, pin?: number, agent?: `agt_${string}`): Promise<Record<string, any>> {
+  const g = await b.call("artifact_get", { id, ...(pin ? { version: pin } : {}) }, { held: [], ...(agent ? { agent } : {}) });
   assert.equal(g.status, 200, JSON.stringify(g.body));
-  return { version: g.body.output.version.n, htmlSha256: g.body.output.version.sha256, title: g.body.output.artifact.title };
+  return g.body.output.shareExpect;
 }
 
 describe("links on the real SDK (viewer address present)", () => {
@@ -206,7 +211,7 @@ describe("links on the real SDK (viewer address present)", () => {
   it("link_needs_hold: a grant that does not hold public_link is refused before anything is created (fail closed)", async () => {
     const e = await looked(b, pageId);
     for (const op of ["artifact_share", "artifact_publish"] as const) {
-      const input: Json = op === "artifact_share" ? { id: pageId, expect: e } : { id: pageId, version: 1, expect: { htmlSha256: e.htmlSha256 }, data: [{ key: "n", digest: "sha256:x" }] };
+      const input: Json = op === "artifact_share" ? { id: pageId, expect: e } : { id: pageId, version: 1, expect: { htmlSha256: e.htmlSha256 }, data: [] };
       const r = await b.call(op, input, { held: [], key: `idem-key-needs-${op}` });
       assert.equal(r.status, 403, `${op}: ${JSON.stringify(r.body)}`);
       assert.equal(r.body.error.code, "link_needs_hold");
@@ -357,6 +362,73 @@ describe("links on the real SDK (viewer address present)", () => {
   });
 });
 
+describe("what the approval is bound to, on the real SDK", () => {
+  let b: Booted;
+  before(async () => {
+    b = await boot(VIEWS);
+  });
+  after(async () => {
+    await b?.stop();
+  });
+  const countHolds = (): number => {
+    const db = new DatabaseSync(join(b.dir, "app.db"), { readOnly: true });
+    try {
+      return Number((db.prepare("SELECT COUNT(*) AS c FROM tb_receipts WHERE status = 'held'").get() as { c: number }).c);
+    } finally {
+      db.close();
+    }
+  };
+  const create = async (title: string, key: string, gallery?: string): Promise<string> => {
+    const r = await b.call("artifact_create", { ...PAGE, title, ...(gallery ? { gallery } : {}), contract: { v: 1, inputs: [{ key: "n", kind: "push", label: "Numbers" }] } }, { held: [], key });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return String(r.body.output.id);
+  };
+
+  it("pushed data is bound: put A, build expect, put B → 409 page_changed before any hold, and no link (S4 review F1, F3)", async () => {
+    const id = await create("Data page", "idem-key-data-1");
+    const owner = await b.person();
+    const sources = await b.call("artifact_get", { id, include: ["sources"] }, { held: [] });
+    const digestOfN = sources.body.output.sources[0].digest;
+    assert.equal((await owner.op("source_approve", { id, key: "n", digest: digestOfN, viewers: true })).status, 200, "the owner shows the pushed data to link viewers");
+    const a = await b.call("artifact_data_put", { id, key: "n", data: { total: 1 } }, { held: [], key: "idem-key-put-a" });
+    const e = await looked(b, id);
+    assert.deepEqual(e.data, [{ key: "n", sha256: a.body.output.digest }]);
+    await b.call("artifact_data_put", { id, key: "n", data: { total: 999 } }, { held: [], key: "idem-key-put-b" });
+    const holdsBefore = countHolds();
+    const r = await b.call("artifact_share", { id, expect: e }, { held: ["public_link"], key: "idem-key-data-share" });
+    assert.equal(r.status, 409, JSON.stringify(r.body));
+    assert.equal(r.body.error.code, "page_changed");
+    assert.equal(countHolds(), holdsBefore, "refused before the hold: no hold appeared");
+    assert.equal(b.links().length, 0);
+  });
+
+  it("a caller that did not make the page: the hold says Do not approve, and the approval never runs, even after the page matches again", async () => {
+    const id = await create("Shared page", "idem-key-shared-1", "shared");
+    const stale = await looked(b, id, undefined, b.w.agent2);
+    const rename = (title: string, key: string) => b.call("artifact_update", { id, title }, { held: [], key });
+    assert.equal((await rename("Renamed", "idem-key-rename-1")).status, 200);
+    const input = { id, expect: stale, label: "Stranger" };
+    const held = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-stranger-1", agent: b.w.agent2 });
+    assert.equal(held.status, 202, "no early refusal for a caller that did not make the page (it must not learn about pages)");
+    const view = b.hold(String(held.body.holdId)).view ?? "";
+    assert.equal(view.split("\n")[0], "Do not approve: this is not the page as it is now.");
+    await b.approve(String(held.body.holdId));
+    assert.equal((await rename("Shared page", "idem-key-rename-2")).status, 200, "the agent makes expect true again");
+    assert.deepEqual(await looked(b, id, undefined, b.w.agent2), stale, "the page equals the expect once more");
+    const run = await b.call("artifact_share", input, { held: ["public_link"], key: "idem-key-stranger-1", agent: b.w.agent2 });
+    assert.equal(run.status, 409, JSON.stringify(run.body));
+    assert.equal(run.body.error.code, "page_changed");
+    assert.equal(b.links().length, 0);
+    // a page that matches is held without the warning and runs on approval (quiet on good)
+    const ok = { id, expect: await looked(b, id, undefined, b.w.agent2), label: "Fine" };
+    const h2 = await b.call("artifact_share", ok, { held: ["public_link"], key: "idem-key-stranger-2", agent: b.w.agent2 });
+    assert.equal(h2.status, 202);
+    assert.doesNotMatch(b.hold(String(h2.body.holdId)).view ?? "", /Do not approve/);
+    await b.approve(String(h2.body.holdId));
+    assert.equal((await b.call("artifact_share", ok, { held: ["public_link"], key: "idem-key-stranger-2", agent: b.w.agent2 })).status, 200);
+  });
+});
+
 describe("the owner on the real SDK person route", () => {
   let b: Booted;
   before(async () => {
@@ -369,7 +441,7 @@ describe("the owner on the real SDK person route", () => {
     const created = await b.call("artifact_create", PAGE, { held: [], key: "idem-key-create-1" });
     const id = String(created.body.output.id);
     const owner = await b.person();
-    const made = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-1" });
+    const made = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-link-1" });
     assert.equal(made.status, 200, JSON.stringify(made.body));
     const out = made.body.output as { linkId: string; url: string; expiresAt: string };
     const token = out.url.split("/").pop() ?? "";
@@ -377,7 +449,7 @@ describe("the owner on the real SDK person route", () => {
     assert.equal(b.links()[0]?.created_by_type, "person");
     assert.equal((await b.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 200);
     // the same request again is the same answer, and no second link
-    const same = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-1" });
+    const same = await owner.op("link_create", { id, label: "Board", expiresInDays: 30, pin: 1 }, { key: "own-link-1" });
     assert.equal(same.body.output.url, out.url);
     assert.equal(b.links().length, 1);
     const list = await owner.op("links_list", {});
@@ -400,7 +472,7 @@ describe("the owner on the real SDK person route", () => {
     const noCsrf = await owner.op("links_list", {}, { csrf: false });
     assert.equal(noCsrf.status, 403);
     assert.equal(noCsrf.body.error.code, "csrf_invalid");
-    const agentOnly = await owner.op("artifact_share", { id, expect: { version: 1, htmlSha256: "x", title: "Second" } }, { key: "own-2" });
+    const agentOnly = await owner.op("artifact_share", { id, expect: { version: 1, htmlSha256: "x", title: "Second" } }, { key: "own-link-2" });
     assert.ok(agentOnly.status >= 400, "artifact_share is an agent op");
     assert.equal(b.links().filter((l) => l.artifact_id === id).length, 0, "none of them made a link");
   });

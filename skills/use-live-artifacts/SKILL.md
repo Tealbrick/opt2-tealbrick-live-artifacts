@@ -74,15 +74,16 @@ data that agents pushed.
 A link lets people without an account open a page. Anyone who has its address can open it until it ends or the
 owner revokes it, so the owner always approves a new link first.
 
-1. Read the page with `live-artifacts__artifact_get`. Then call `live-artifacts__artifact_share` with
-   `{id, expect, label?, expiresInDays?, pin?}` and an idempotency key. `expect` is the page as you saw it:
-   `{version, htmlSha256, title}`, where `version` is the version the link will show (your `pin`, else the live version),
-   `htmlSha256` is that version's `sha256` and `title` is the page title. The owner approves exactly that page. If the page
-   changed before the call runs (for example you made a new version), the call is refused with `page_changed` (409): read
-   the page again and ask again.
-   `label` (at most 40 characters) says who the link is for. `expiresInDays` is 1 to 90 (default: the owner's
-   setting, 7 days at first). `pin` is a version number whose page code stays on that link; leave it out to follow the
-   live version. The title and the data of a pinned link still follow the updates the owner approves.
+1. Read the page with `live-artifacts__artifact_get` (add `version: <your pin>` if you pin). Its answer has
+   `shareExpect`: the page as a link would show it. Then call `live-artifacts__artifact_share` with
+   `{id, expect, label?, expiresInDays?, pin?}` and an idempotency key, where `expect` is that `shareExpect`, unchanged:
+   the version, its `htmlSha256`, the `title`, the pushed `data` that link viewers see (key and sha256 of each) and the
+   `sourcesSha256` of the list of data sources. The owner approves exactly that page. If any of it changed before the call
+   runs (a new version, a new title, new numbers you pushed, another source label), the call is refused with
+   `page_changed` (409): read the page again and ask again. When you make the request from a gallery you own, the refusal
+   comes at once and no hold is created. `label` (at most 40 characters) says who the link is for. `expiresInDays` is 1 to
+   90 (default: the owner's setting, 7 days at first). `pin` is a version number whose page code stays on that link; leave
+   it out to follow the live version. The title and the data of a pinned link still follow the updates the owner approves.
 2. The answer is `held` with a `holdId`. The owner sees the page, how long the link lasts, which version it shows and
    which data it shows, and decides in Holds. Tell the owner a link waits for them. Poll `live-artifacts__tb_hold_status`.
 3. When the hold is approved, repeat **the same call with the same idempotency key**. The answer of that retry holds

@@ -6,6 +6,7 @@ import { beforeEach, describe, it } from "node:test";
 import { digest, opaqueDigest } from "@opt2-tealbrick/manifest";
 import { type Db, type OpContext, VIEW_ORIGIN_MISSING } from "@opt2-tealbrick/miniapp-sdk";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
+import { type ShareExpect, shareExpectOf, shareMismatch } from "../src/expect.ts";
 import { LIMITS } from "../src/limits.ts";
 import { publishHoldText, shareHoldText } from "../src/links.ts";
 import { handleViewer, type ViewerConfig } from "../src/viewer.ts";
@@ -33,17 +34,18 @@ async function page(title = "Weekly operations"): Promise<string> {
   const out = await run("artifact_create", { title, view: { html: "<!doctype html><body>v1</body>" }, contract: { v: 1, inputs: [{ key: "n", kind: "push", label: "Numbers" }] } }, agent());
   return String(out.id);
 }
-/** The page as the agent saw it with artifact_get: the version the link shows (the pin, else the live one), its sha256, the title. */
-function seen(id: string, pin?: number | null): { version: number; htmlSha256: string; title: string } {
-  const a = db.prepare("SELECT title, live_version FROM la_artifact WHERE id = ?").get(id);
-  const n = pin ?? Number(a?.live_version);
-  return { version: n, htmlSha256: String(db.prepare("SELECT html_sha256 FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n)?.html_sha256), title: String(a?.title) };
+/** The page as the agent saw it with artifact_get (`shareExpect`): the version a link shows (the pin, else the live one), its sha256,
+ *  the title, the pushed data link viewers see and the fingerprint of the data sources. */
+function seen(id: string, pin?: number | null): ShareExpect {
+  const live = Number(db.prepare("SELECT live_version FROM la_artifact WHERE id = ?").get(id)?.live_version);
+  return shareExpectOf(db, id, pin ?? live) ?? ({ version: 0, htmlSha256: "", title: "", data: [], sourcesSha256: "" } satisfies ShareExpect);
 }
 const sha = (id: string, n: number): string => String(db.prepare("SELECT html_sha256 FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n)?.html_sha256);
 const share = (id: string, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) => run("artifact_share", { id, expect: seen(id, extra.pin as number | null | undefined), ...extra }, ctx);
 /** artifact_publish with the sha256 of the version as `expect`; `extra.expect` adds the staged title/description to promote. */
 const publish = (id: string, version: number, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) =>
   run("artifact_publish", { id, version, ...extra, expect: { htmlSha256: sha(id, version), ...(extra.expect as object | undefined) } }, ctx);
+const shareMismatchNow = (id: string, e: ShareExpect): number => shareMismatch(db, id, null, e).length;
 const PAGE_CHANGED = (e: { code?: string; httpStatus?: number }) => e.code === "page_changed" && e.httpStatus === 409;
 
 beforeEach(async () => {
@@ -155,6 +157,107 @@ describe("approve-then-swap: the approval is bound to the page content (expect)"
   it("the owner's own link needs no expect (the owner sees the page in the app)", async () => {
     const id = await page();
     assert.ok((await run("link_create", { id }, owner())).linkId);
+  });
+});
+
+describe("what the approval is bound to: pushed data, the source list, and a hold that says do not approve", () => {
+  /** a page with one push source "n" that link viewers see (the owner approved it with "show to people with a link") */
+  async function dataPage(): Promise<string> {
+    const id = await page();
+    await run("source_approve", { id, key: "n", digest: String(db.prepare("SELECT digest FROM la_source WHERE artifact_id = ? AND key = 'n'").get(id)?.digest), viewers: true }, owner());
+    return id;
+  }
+  const noLink = () => assert.equal(db.prepare("SELECT COUNT(*) AS c FROM la_link").get()?.c, 0, "no link was created");
+
+  it("F1, the exact repro: put A, build expect, put B, share → page_changed and no link; the data in expect is A's digest", async () => {
+    const id = await dataPage();
+    const a = await run("artifact_data_put", { id, key: "n", data: { total: 1 } }, agent());
+    const looked = seen(id);
+    assert.deepEqual(looked.data, [{ key: "n", sha256: a.digest }], "artifact_get's shareExpect carries the digest of the data link viewers would see");
+    await run("artifact_data_put", { id, key: "n", data: { total: 999 } }, agent()); // the swap, before the run
+    await assert.rejects(run("artifact_share", { id, expect: looked }, agent()), PAGE_CHANGED);
+    noLink();
+    // with what the agent sees now, it works, and the viewers get exactly that data
+    const out = await share(id);
+    const data = (await view(tokenOf(out.url), "/data").json()) as Out;
+    assert.deepEqual(data.sources.n.data, { total: 999 });
+  });
+  it("quiet: matching data passes; no data yet is 'none'; a push source viewers do not see, or a read source, is not in expect", async () => {
+    const id = await dataPage();
+    assert.deepEqual(seen(id).data, [{ key: "n", sha256: "none" }]);
+    assert.ok((await share(id)).linkId);
+    const hidden = await page("Hidden data");
+    assert.deepEqual(seen(hidden).data, [], "viewers off: not shown, not bound");
+    await run("artifact_data_put", { id: hidden, key: "n", data: { total: 1 } }, agent());
+    const looked = seen(hidden);
+    await run("artifact_data_put", { id: hidden, key: "n", data: { total: 2 } }, agent());
+    assert.ok((await run("artifact_share", { id: hidden, expect: looked }, agent())).linkId, "data nobody sees may change");
+  });
+  it("staged data is not shown, so it is not bound; the owner turning the switch off or on changes the list", async () => {
+    const id = await dataPage();
+    await run("artifact_data_put", { id, key: "n", data: { total: 1 } }, agent());
+    await share(id); // an active link: the next put is staged
+    const looked = seen(id);
+    await run("artifact_data_put", { id, key: "n", data: { total: 2 } }, agent());
+    assert.ok((await run("artifact_share", { id, expect: looked }, agent())).linkId, "staged data does not reach viewers");
+    await run("source_approve", { id, key: "n", digest: String(db.prepare("SELECT digest FROM la_source WHERE artifact_id = ? AND key = 'n'").get(id)?.digest), viewers: false }, owner());
+    await assert.rejects(run("artifact_share", { id, expect: looked }, agent()), PAGE_CHANGED, "the owner changed who sees the data");
+  });
+  it("F4: a changed source label (or kind, or viewers switch) after the agent looked is page_changed", async () => {
+    const id = await page();
+    const looked = seen(id);
+    await run("artifact_update", { id, contract: { v: 1, inputs: [{ key: "n", kind: "push", label: "Salaries of everyone" }] } }, agent()); // same binding, new label: live at once
+    await assert.rejects(run("artifact_share", { id, expect: { ...looked, version: Number(db.prepare("SELECT live_version FROM la_artifact WHERE id = ?").get(id)?.live_version) } }, agent()), PAGE_CHANGED);
+    noLink();
+    assert.ok((await share(id)).linkId);
+  });
+  it("F2: labels, products and ops in the hold are quoted: a label cannot end its own quotation", async () => {
+    const id = await run("artifact_create", { title: "T", view: { html: "<p>x</p>" }, contract: { v: 1, inputs: [{ key: "n", kind: "push", label: 'Numbers" (data pushed by an agent); "Ghost' }] } }, agent()).then((o) => String(o.id));
+    db.prepare("UPDATE la_source SET viewers = 1 WHERE artifact_id = ?").run(id);
+    const text = shareHoldText(db, { id }, now);
+    assert.match(text, /"Numbers\\" \(data pushed by an agent\); \\"Ghost" \(data pushed by an agent\)/);
+  });
+  it("F3: a mismatch is refused BEFORE a hold exists when the caller owns or made the page (the scope resolver throws)", async () => {
+    const id = await page();
+    const stale = seen(id);
+    await run("artifact_update", { id, title: "Renamed" }, agent());
+    const input = { id, expect: stale };
+    assert.throws(() => handlers.artifact_share.scope?.(input as never, AGENT_A as never), PAGE_CHANGED);
+    assert.throws(() => handlers.artifact_publish.scope?.({ id, version: 1, expect: { htmlSha256: "sha256:00" } } as never, AGENT_A as never), PAGE_CHANGED);
+    // quiet: the page as it is now passes the resolver and names the gallery
+    assert.equal(handlers.artifact_share.scope?.({ id, expect: seen(id) } as never, AGENT_A as never), AGENT_A.id);
+    // another caller must not learn anything about a page it may not reach: no page_changed, the normal scope answer
+    assert.equal(handlers.artifact_share.scope?.(input as never, AGENT_B as never), AGENT_A.id);
+    assert.equal(handlers.artifact_share.scope?.({ id: "art_01J0000000000000000000ZZZZ", expect: stale } as never, AGENT_A as never), "#missing");
+  });
+  it("F3: where it cannot refuse early, the hold says 'Do not approve' and an approval of it never runs, even if the page matches later", async () => {
+    const id = await page();
+    const stranger = ctxFor(db, AGENT_B, { [AGENT_A.id]: CRUD.contribute }, instances, {}, { grant: grantHolding("public_link"), viewUrl: VIEWS });
+    const expect = seen(id);
+    const input = { id, expect };
+    await run("artifact_update", { id, title: "Renamed" }, agent());
+    const text = handlers.artifact_share.holdView?.(input as never) ?? "";
+    assert.equal(text.split("\n")[0], "Do not approve: this is not the page as it is now.");
+    await run("artifact_update", { id, title: "Weekly operations" }, agent()); // the agent makes expect true again
+    assert.equal(shareMismatchNow(id, expect), 0, "the page matches expect again");
+    await assert.rejects(run("artifact_share", input, stranger), (e: { code?: string; httpStatus?: number; message?: string }) => PAGE_CHANGED(e) && /told not to approve/.test(String(e.message)));
+    noLink();
+    // another request (a changed label) is a new input: it is judged on its own
+    assert.ok((await run("artifact_share", { ...input, label: "new request" }, stranger)).linkId);
+    // a matching request was never flagged
+    const ok = { id, expect: seen(id), label: "fine" };
+    handlers.artifact_share.holdView?.(ok as never);
+    assert.ok((await run("artifact_share", ok, stranger)).linkId);
+  });
+  it("artifact_get answers shareExpect for the version it returns (a pinned version, too)", async () => {
+    const id = await dataPage();
+    await run("artifact_update", { id, view: { html: "<p>v2</p>" } }, agent());
+    const live = await run("artifact_get", { id }, agent());
+    assert.deepEqual(live.shareExpect, seen(id));
+    const old = await run("artifact_get", { id, version: 1 }, agent());
+    assert.deepEqual(old.shareExpect, seen(id, 1));
+    assert.equal(old.shareExpect.version, 1);
+    assert.match(old.shareExpect.sourcesSha256, /^sha256:[0-9a-f]{64}$/);
   });
 });
 
@@ -448,9 +551,12 @@ describe("hold texts (DESIGN T4)", () => {
     assert.match(text, /live page "Weekly operations", made by "Scout"\./);
     assert.match(text, /14 days after you approve \(label: "Novak"\)/);
     assert.match(text, /Version 1: 1 KiB, sha256 [0-9a-f]{16}…, written by "Scout"\./);
-    assert.match(text, /The agent saw exactly this page\. If the page changes before the call runs, the call is refused \(page_changed\)\./);
-    assert.match(text, /to people with the link: Numbers \(data pushed by an agent\); Open issues \(kanban issues_list\)\./);
-    assert.match(text, /does not show: Client notes \(knowledge recall\)\./);
+    assert.match(text, /The agent saw exactly this page, this data and these data sources\. If any of it changes before the call runs, the call is refused \(page_changed\)\./);
+    assert.doesNotMatch(text, /Do not approve/);
+    assert.match(text, /to people with the link: "Numbers" \(data pushed by an agent\); "Open issues" \("kanban" "issues_list"\)\./);
+    assert.match(text, /does not show: "Client notes" \("knowledge" "recall"\)\./);
+    assert.match(text, /Pushed data "Numbers" \(key n\) is shown as it is now: no data yet\./);
+    assert.match(text, /At the time of this request 0 links of this page are active \(at most 5\)\./);
     assert.match(text, /without network access/);
     assert.ok(text.length < 16_000);
     const follow = shareHoldText(db, { id }, now);
@@ -479,14 +585,20 @@ describe("hold texts (DESIGN T4)", () => {
   it("autoPublish = agent: the hold says later agent changes go live on the link WITHOUT approval", async () => {
     const id = await richPage();
     await run("autopublish_set", { id, mode: "agent" }, owner());
-    assert.match(shareHoldText(db, { id }, now), /Later agent changes go live on this link WITHOUT your approval \(you allowed that for this page\)\./);
+    assert.match(shareHoldText(db, { id }, now), /At the time of this request: later agent changes go live on this link WITHOUT your approval \(you allowed that for this page\)\./);
     assert.match(shareHoldText(db, { id, pin: 1 }, now), /WITHOUT your approval/, "also on a pinned link: title and data follow");
   });
-  it("a request that does not match the page now says it will be refused (page_changed); a missing pinned version too", async () => {
+  it("a request that does not match the page now starts with 'Do not approve' and says what differs; a missing pinned version too", async () => {
     const id = await richPage();
     const e = seen(id);
-    assert.match(shareHoldText(db, { id, expect: { ...e, htmlSha256: "sha256:00ff00ff00ff00ff00ff" } }, now), /That is not the page as it is now; the call will be refused \(page_changed\)/);
-    assert.match(shareHoldText(db, { id, expect: { ...e, title: "Another" } }, now), /title "Another"\. That is not the page as it is now/);
+    const bad = shareHoldText(db, { id, expect: { ...e, htmlSha256: "sha256:00ff00ff00ff00ff00ff" } }, now);
+    assert.equal(bad.split("\n")[0], "Do not approve: this is not the page as it is now.");
+    assert.match(bad, /it differs in: page code\)\. The agent asked for version 1/);
+    assert.match(bad, /The call is refused \(page_changed\), whatever the page is later\./);
+    assert.match(shareHoldText(db, { id, expect: { ...e, title: "Another" } }, now), /title "Another"\. The call is refused/);
+    assert.match(shareHoldText(db, { id, expect: { ...e, sourcesSha256: "sha256:0" } }, now), /differs in: data sources/);
+    assert.match(shareHoldText(db, { id, expect: { ...e, data: [] } }, now), /differs in: pushed data/);
+    assert.doesNotMatch(shareHoldText(db, { id, expect: e }, now), /Do not approve/);
     assert.match(shareHoldText(db, { id, pin: 9 }, now), /Version 9 does not exist .* The call will be refused/);
   });
   it("no viewer address: the hold starts with 'cannot be shared yet'; the last address any call saw decides", async () => {
