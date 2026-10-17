@@ -521,19 +521,26 @@ describe("a paused agent (real SDK)", () => {
     await b?.stop();
   });
   it("gets the paused answer, never page_changed, whatever it guesses: same code for a real and an unknown page", async () => {
+    // the paused agent cannot create a page itself: an unpaused agent makes a real one in the shared gallery
+    const made = await b.call("artifact_create", { ...PAGE, title: "Real page", gallery: "shared" }, { held: [], key: "idem-key-paused-real", agent: b.w.agent2 });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const realId = String(made.body.output.id);
+    const unknownId = "art_01J0000000000000000000ZZZZ";
     const guess = { version: 1, htmlSha256: "sha256:00", title: "guess", data: [], sourcesSha256: "sha256:guess" };
-    const answers: [number, string][] = [];
-    for (const [op, input] of [
-      ["artifact_share", { id: "art_01J0000000000000000000ZZZZ", expect: guess }],
-      ["artifact_publish", { id: "art_01J0000000000000000000ZZZZ", version: 1, expect: { htmlSha256: "sha256:00" } }],
+    const answers: [number, string, string][] = [];
+    for (const [op, mk] of [
+      ["artifact_share", (id: string) => ({ id, expect: guess })],
+      ["artifact_publish", (id: string) => ({ id, version: 1, expect: { htmlSha256: "sha256:00" } })],
     ] as const) {
-      const r = await b.call(op, input, { held: ["public_link"], key: `idem-key-paused-${op}` });
-      assert.ok(r.status >= 400 && r.status !== 409, `${op}: ${JSON.stringify(r.body)}`);
-      assert.notEqual(r.body.error.code, "page_changed");
-      answers.push([r.status, r.body.error.code]);
+      for (const [which, id] of [["real", realId], ["unknown", unknownId]] as const) {
+        const r = await b.call(op, mk(id), { held: ["public_link"], key: `idem-key-paused-${op}-${which}` });
+        assert.ok(r.status >= 400 && r.status !== 409, `${op} ${which}: ${JSON.stringify(r.body)}`);
+        assert.notEqual(r.body.error.code, "page_changed");
+        answers.push([r.status, r.body.error.code, r.body.error.message]);
+      }
     }
     assert.match(answers[0]?.[1] ?? "", /paused/, "the paused answer");
-    assert.deepEqual(answers[0], answers[1]);
+    for (const a of answers) assert.deepEqual(a, answers[0], "the same answer for a real and an unknown page, on both ops");
     assert.equal(b.links().length, 0);
   });
 });

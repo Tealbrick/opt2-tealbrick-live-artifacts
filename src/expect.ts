@@ -1,8 +1,9 @@
 // What an agent link request is bound to (S4 review F1, F4). The owner approves a link for ONE page: the version it shows,
 // that version's sha256, the title, the pushed data that link viewers see, and the list of data sources. The agent sends
 // that as `expect` (artifact_get answers it ready-made as `shareExpect`); the call is refused with `page_changed` when
-// the page is not exactly that when it runs. The same function judges the call before the hold (scope resolver), in the
-// hold text and when the call runs, so the three can never disagree.
+// the page is not exactly that when it runs. The same function judges the call in the hold text (a mismatch there makes a
+// flagged "Do not approve" hold that never runs, la_hold_flag) and when the call runs, so the two can never disagree.
+// There is no early refusal before the hold: the SDK access and pause checks come first for every caller (543880d).
 import { digest } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { artifactRow, versionRow } from "./store.ts";
