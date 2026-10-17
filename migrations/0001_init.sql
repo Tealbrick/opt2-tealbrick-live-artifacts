@@ -11,7 +11,8 @@ CREATE TABLE la_artifact (
   staged_title TEXT,                        -- title/description waiting for the owner on a shared page
   staged_description TEXT,
   auto_publish TEXT NOT NULL DEFAULT 'owner' CHECK (auto_publish IN ('owner', 'agent')),
-  refresh_every_s INTEGER,                  -- proposed or approved schedule (300..86400), NULL = none
+  refresh_every_s INTEGER,                  -- the schedule in force: the owner's value once approved, else the proposal
+  refresh_proposed_s INTEGER,               -- what the agent's contract proposes (an agent change is compared with this)
   refresh_approved INTEGER NOT NULL DEFAULT 0,
   refresh_state TEXT NOT NULL DEFAULT 'off' CHECK (refresh_state IN ('off', 'waiting_approval', 'on', 'paused', 'paused_error')),
   next_refresh_at INTEGER,
@@ -77,6 +78,7 @@ CREATE TABLE la_snapshot (
   code TEXT,
   pushed_by_id TEXT,
   pushed_by_name TEXT,
+  hold_key TEXT,                            -- idempotency key of a held read, reused until the hold is decided
   PRIMARY KEY (artifact_id, key)
 );
 

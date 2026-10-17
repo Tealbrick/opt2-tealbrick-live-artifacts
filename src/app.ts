@@ -305,6 +305,7 @@ export const handlers = {
     async run(i, ctx) {
       const by = await prepare(ctx);
       await needArtifact(ctx, i.id, "delete");
+      stopRefreshJob(ctx.db, (ctx as unknown as { jobs?: JobsApi }).jobs, i.id);
       const r = deleteArtifact(ctx.db, i.id, by, clock());
       ctx.statusChanged();
       return r;
@@ -328,12 +329,22 @@ export const handlers = {
       const a = await needArtifact(ctx, i.id, "update");
       if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
       const now = clock();
-      const last = a.manual_refresh_at === null ? null : Number(a.manual_refresh_at);
-      if (last !== null && now - last < LIMITS.manualRefreshMs)
-        throw new TbError("refresh_rate_limited", `one refresh per minute per page; try again in ${Math.ceil((LIMITS.manualRefreshMs - (now - last)) / 1000)} s`, 429);
-      ctx.db.prepare("UPDATE la_artifact SET manual_refresh_at = ? WHERE id = ?").run(now, i.id);
+      // claim the one-per-minute slot atomically (two parallel calls cannot both pass; review PR #3, finding 3)
+      const claimed = ctx.db
+        .prepare("UPDATE la_artifact SET manual_refresh_at = ? WHERE id = ? AND (manual_refresh_at IS NULL OR manual_refresh_at <= ?)")
+        .run(now, i.id, now - LIMITS.manualRefreshMs);
+      if (Number(claimed.changes) !== 1) {
+        const last = Number(artifactRow(ctx.db, i.id)?.manual_refresh_at ?? now);
+        throw new TbError("refresh_rate_limited", `one refresh per minute per page; try again in ${Math.max(1, Math.ceil((LIMITS.manualRefreshMs - (now - last)) / 1000))} s`, 429);
+      }
       // the reads use this app's own read-only companion grant; the agent gets the status per source, never the data
-      const out = await refreshArtifact(ctx.db, ctx.callApp as never, i.id, { slot: `manual:${Math.floor(now / LIMITS.manualRefreshMs)}`, ...(i.keys ? { keys: i.keys } : {}), now: clock });
+      const out = await refreshArtifact(ctx.db, ctx.callApp as never, i.id, {
+        mode: "manual",
+        slot: `m${Math.floor(now / LIMITS.manualRefreshMs)}`,
+        ...(i.keys ? { keys: i.keys } : {}),
+        now: clock,
+        signal: (ctx as { signal?: AbortSignal }).signal,
+      });
       return { results: out.results };
     },
   }),
@@ -411,8 +422,9 @@ export const handlers = {
     redact: (i) => `page ${i.id} source ${i.key} approved (viewers ${i.viewers ? "on" : "off"})`,
     async run(i, ctx) {
       return ctx.db.transaction(() => {
-        const src = ctx.db.prepare("SELECT digest FROM la_source WHERE artifact_id = ? AND key = ?").get(i.id, i.key);
+        const src = ctx.db.prepare("SELECT digest, kind FROM la_source WHERE artifact_id = ? AND key = ?").get(i.id, i.key);
         if (!src) throw new TbError("source_unknown", `the page has no source "${i.key}"`, 404);
+        if (String(artifactRow(ctx.db, i.id)?.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; restore it first", 409);
         if (String(src.digest) !== i.digest) throw new TbError("digest_changed", "this source changed since you looked at it; review it again", 409);
         ctx.db
           .prepare("UPDATE la_source SET approved_digest = digest, approved_by = ?, approved_at = ?, viewers = ? WHERE artifact_id = ? AND key = ?")
@@ -438,22 +450,10 @@ export const handlers = {
       const jobs = (ctx as unknown as { jobs: JobsApi }).jobs;
       const a = artifactRow(ctx.db, i.id);
       if (!a) throw notFound();
+      // check BEFORE touching the job (review PR #3, finding 6)
+      if (i.everySeconds !== null && String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; restore it first", 409);
       const now = clock();
-      const old = a.refresh_job_id === null ? null : String(a.refresh_job_id);
-      if (old) {
-        const j = jobs.get(old);
-        if (j && ["queued", "waiting", "running", "paused"].includes(j.status)) jobs.cancel(old);
-      }
-      if (i.everySeconds === null) {
-        ctx.db.prepare("UPDATE la_artifact SET refresh_approved = 0, refresh_state = 'off', next_refresh_at = NULL, refresh_job_id = NULL WHERE id = ?").run(i.id);
-      } else {
-        if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; restore it first", 409);
-        // enqueued by the OWNER: the schedule does not depend on the agent that made the page (DESIGN O6)
-        const job = jobs.enqueue(REFRESH_JOB, { id: i.id });
-        ctx.db
-          .prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = 1, refresh_state = 'on', consecutive_failures = 0, next_refresh_at = ?, refresh_job_id = ? WHERE id = ?")
-          .run(i.everySeconds, now, job.id, i.id);
-      }
+      restartRefresh(ctx.db, jobs, i.id, i.everySeconds, now);
       ctx.statusChanged();
       return { id: i.id, refresh: toDetail(ctx.db, artifactRow(ctx.db, i.id) ?? a, now).refresh };
     },
@@ -476,13 +476,19 @@ export const handlers = {
   [OP.artifactArchive]: op<ArtifactArchiveInput, unknown>({
     redact: (i) => `page ${i.id} ${i.archived ? "archive" : "restore"}`,
     async run(i, ctx) {
-      return { id: i.id, status: setArchived(ctx.db, i.id, i.archived, actorOf(ctx), clock()) };
+      const jobs = (ctx as unknown as { jobs?: JobsApi }).jobs;
+      const status = setArchived(ctx.db, i.id, i.archived, actorOf(ctx), clock());
+      const a = artifactRow(ctx.db, i.id);
+      if (i.archived) stopRefreshJob(ctx.db, jobs, i.id);
+      else if (jobs && a && Number(a.refresh_approved) === 1 && a.refresh_every_s !== null) restartRefresh(ctx.db, jobs, i.id, Number(a.refresh_every_s), clock()); // restore resumes the approved schedule
+      return { id: i.id, status };
     },
   }),
   [OP.artifactRemove]: op<ArtifactRemoveInput, unknown>({
     redact: sayArtifact,
     async run(i, ctx) {
       if (!artifactRow(ctx.db, i.id)) throw notFound();
+      stopRefreshJob(ctx.db, (ctx as unknown as { jobs?: JobsApi }).jobs, i.id);
       const r = deleteArtifact(ctx.db, i.id, actorOf(ctx), clock());
       ctx.statusChanged();
       return r;
@@ -519,18 +525,62 @@ export async function refreshTick(input: Json, ctx: JobContext): Promise<{ statu
   if (!a || String(a.status) !== "active" || Number(a.refresh_approved) !== 1 || String(a.refresh_job_id) !== ctx.job.id) return { status: "done" };
   const every = Number(a.refresh_every_s);
   const now = clock();
-  let next: { state: string; nextAt: number | null } = { state: "on", nextAt: now + every * 1000 };
-  await refreshArtifact(ctx.db, ctx.callApp as never, id, {
-    slot: `s${Math.floor(now / (every * 1000))}`,
-    now: clock,
-    write: (fn) => ctx.checkpoint({ at: now }, fn),
-    after: (o, at) => {
-      next = recordTick(ctx.db, id, o, at);
-    },
-  });
+  // not due yet (a re-run after a crash or a manual job resume): wait instead of reading again (finding 10)
+  const due = a.next_refresh_at === null ? now : Number(a.next_refresh_at);
+  if (due > now + 1000) return { status: "again", afterMs: due - now };
+  let next: { state: string; nextAt: number | null } | null = null;
+  try {
+    await refreshArtifact(ctx.db, ctx.callApp as never, id, {
+      mode: "scheduled",
+      slot: `s${Math.floor(now / (every * 1000))}`,
+      attempt: Number(a.consecutive_failures),
+      now: clock,
+      signal: ctx.signal,
+      write: (fn) => ctx.checkpoint({ at: now }, fn),
+      after: (o, at) => {
+        next = recordTick(ctx.db, id, ctx.job.id, o, at);
+      },
+    });
+  } catch (e) {
+    if ((e as { code?: string })?.code === "job_lease_lost" || ctx.signal.aborted) throw e; // the SDK resumes it
+    // an unexpected throw is a FAILED tick for the page, not only an SDK attempt (finding 9)
+    next = ctx.db.transaction(() => recordTick(ctx.db, id, ctx.job.id, { failed: true, paused: false, deferred: false }, clock()));
+  }
   ctx.statusChanged();
-  if (next.state === "paused_error" || next.nextAt === null) return { status: "done" };
-  return { status: "again", afterMs: Math.max(1000, next.nextAt - clock()) };
+  const n = next as { state: string; nextAt: number | null } | null;
+  if (!n || n.state === "paused_error" || n.nextAt === null) return { status: "done" };
+  return { status: "again", afterMs: Math.max(1000, n.nextAt - clock()) };
+}
+
+/** (Re)start or stop the refresh job of a page. Cancels the page's old job first; enqueued by the owner (O6). */
+export function restartRefresh(db: Db, jobs: JobsApi, id: string, everySeconds: number | null, now: number): void {
+  const a = artifactRow(db, id);
+  if (!a) return;
+  const old = a.refresh_job_id === null ? null : String(a.refresh_job_id);
+  if (old) {
+    const j = jobs.get(old);
+    if (j && ["queued", "waiting", "running", "paused"].includes(j.status)) jobs.cancel(old);
+  }
+  if (everySeconds === null) {
+    db.prepare("UPDATE la_artifact SET refresh_approved = 0, refresh_state = 'off', next_refresh_at = NULL, refresh_job_id = NULL WHERE id = ?").run(id);
+    return;
+  }
+  const job = jobs.enqueue(REFRESH_JOB, { id });
+  db.prepare("UPDATE la_artifact SET refresh_every_s = ?, refresh_approved = 1, refresh_state = 'on', consecutive_failures = 0, next_refresh_at = ?, refresh_job_id = ? WHERE id = ?").run(
+    everySeconds,
+    now,
+    job.id,
+    id,
+  );
+}
+/** Stop the job of a page that is archived or deleted (approval is kept for a restore). */
+function stopRefreshJob(db: Db, jobs: JobsApi | undefined, id: string): void {
+  const a = artifactRow(db, id);
+  const old = a?.refresh_job_id ? String(a.refresh_job_id) : null;
+  if (!old || !jobs) return;
+  const j = jobs.get(old);
+  if (j && ["queued", "waiting", "running", "paused"].includes(j.status)) jobs.cancel(old);
+  db.prepare("UPDATE la_artifact SET refresh_job_id = NULL WHERE id = ?").run(id);
 }
 
 export const definition: SdkAppDefinition = {

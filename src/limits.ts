@@ -27,6 +27,8 @@ export const LIMITS = {
   refreshMaxS: 86_400,
   /** companion calls per hour from refreshes (all artifacts) */
   refreshCallsPerHour: 600,
+  /** companion calls per hour from agent-asked refreshes (artifact_refresh), separate from the schedule */
+  manualCallsPerHour: 120,
   /** failed refresh ticks in a row before paused_error */
   refreshFailures: 5,
   /** agent artifact_refresh: one per artifact per this many ms */

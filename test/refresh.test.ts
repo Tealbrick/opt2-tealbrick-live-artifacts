@@ -74,6 +74,7 @@ function jobCtx(jobId: string) {
     db,
     callApp,
     job: { id: jobId },
+    signal: new AbortController().signal,
     checkpoint: (_state: Json, write?: (d: Db) => unknown) =>
       db.transaction(() => {
         committed++;
@@ -113,8 +114,9 @@ describe("refreshArtifact", () => {
   it("reads only approved sources, through the companion grant, with a slot-stable idempotency key", async () => {
     const id = await page();
     approve(id, "tasks");
-    const o = await refreshArtifact(db, callApp, id, { slot: "s1", now: () => now });
-    assert.deepEqual(calls, [{ product: "kanban", op: "issues_list", input: { status: "blocked" }, key: idemKey(id, "tasks", "s1") }]);
+    const o = await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now });
+    assert.equal(calls.length, 1);
+    assert.deepEqual({ ...calls[0], key: undefined }, { product: "kanban", op: "issues_list", input: { status: "blocked" }, key: undefined });
     assert.deepEqual(
       o.results.map((r) => [r.key, r.status]),
       [
@@ -124,32 +126,32 @@ describe("refreshArtifact", () => {
     );
     assert.deepEqual(JSON.parse(String(snap(id, "tasks")?.data_json)), [{ title: "Fix login" }], "projection applied: no 'secret' field kept");
     assert.equal(snap(id, "mem"), undefined, "an unapproved source is never read");
-    assert.equal(idemKey(id, "tasks", "s1"), idemKey(id, "tasks", "s1"));
-    assert.notEqual(idemKey(id, "tasks", "s1"), idemKey(id, "tasks", "s2"));
+    assert.equal(idemKey(["a", "b"]), idemKey(["a", "b"]));
+    assert.notEqual(idemKey(["a", "b"]), idemKey(["a", "c"]));
   });
   it("held / error / paused keep the last good data and record the state (fires on bad)", async () => {
     const id = await page();
     approve(id, "tasks");
-    await refreshArtifact(db, callApp, id, { slot: "s1", now: () => now });
+    await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now });
     const good = snap(id, "tasks")?.data_json;
     answer = async () => ({ status: "held", holdId: "hld_1", expiresAt: "x" });
-    let o = await refreshArtifact(db, callApp, id, { slot: "s2", now: () => now });
+    let o = await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s2", now: () => now });
     assert.deepEqual([snap(id, "tasks")?.data_json, snap(id, "tasks")?.status, snap(id, "tasks")?.code, o.failed], [good, "held", "hld_1", false]);
     answer = async () => Promise.reject(new TbError("scope_denied", "no", 403));
-    o = await refreshArtifact(db, callApp, id, { slot: "s3", now: () => now });
+    o = await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s3", now: () => now });
     assert.deepEqual([snap(id, "tasks")?.data_json, snap(id, "tasks")?.status, snap(id, "tasks")?.code, o.failed], [good, "error", "scope_denied", true]);
     answer = async () => Promise.reject(new TbError("paused", "kill switch", 503));
-    o = await refreshArtifact(db, callApp, id, { slot: "s4", now: () => now });
+    o = await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s4", now: () => now });
     assert.deepEqual([snap(id, "tasks")?.status, o.failed, o.paused], ["paused", false, true]);
     answer = async () => ({ status: "ok", output: { other: 1 } });
-    o = await refreshArtifact(db, callApp, id, { slot: "s5", now: () => now });
+    o = await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s5", now: () => now });
     assert.deepEqual([snap(id, "tasks")?.code, o.failed], ["projection_empty", true]);
   });
   it("refuses data over 256 KiB from a source and stops at the hourly call budget", async () => {
     const id = await page();
     approve(id, "tasks");
     answer = async () => ({ status: "ok", output: { issues: [{ title: "x".repeat(LIMITS.snapshotBytes) }] } });
-    await refreshArtifact(db, callApp, id, { slot: "s1", now: () => now });
+    await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now });
     assert.equal(snap(id, "tasks")?.code, "data_too_large");
     const b = new CallBudget(2);
     assert.deepEqual([b.take(0), b.take(1), b.take(2), b.take(3_600_001)], [true, true, false, true]);
@@ -186,7 +188,10 @@ describe("the refresh job", () => {
     const { id, jobId } = await scheduled();
     answer = async () => Promise.reject(new TbError("upstream_down", "x", 502));
     const outs = [];
-    for (let n = 0; n < LIMITS.refreshFailures; n++) outs.push(await refreshTick({ id }, jobCtx(jobId) as never));
+    for (let n = 0; n < LIMITS.refreshFailures; n++) {
+      now = Math.max(now, Number(artifactRow(db, id)?.next_refresh_at ?? now));
+      outs.push(await refreshTick({ id }, jobCtx(jobId) as never));
+    }
     assert.deepEqual(
       outs.map((o) => ("afterMs" in o ? o.afterMs : o.status)),
       [60_000, 120_000, 240_000, 480_000, "done"],
@@ -202,7 +207,10 @@ describe("the refresh job", () => {
   it("a kill switch does not count as a failure", async () => {
     const { id, jobId } = await scheduled();
     answer = async () => Promise.reject(new TbError("paused", "kill switch", 503));
-    for (let n = 0; n < 7; n++) await refreshTick({ id }, jobCtx(jobId) as never);
+    for (let n = 0; n < 7; n++) {
+      now = Math.max(now, Number(artifactRow(db, id)?.next_refresh_at ?? now));
+      await refreshTick({ id }, jobCtx(jobId) as never);
+    }
     assert.deepEqual([artifactRow(db, id)?.refresh_state, Number(artifactRow(db, id)?.consecutive_failures)], ["paused", 0]);
   });
   it("an old job, an archived or deleted page, or a switched-off schedule ends the tick without a read", async () => {
@@ -260,5 +268,165 @@ describe("agent artifact_refresh and owner source ops", () => {
     answer = async () => Promise.reject(new TbError("scope_denied", "no", 403));
     const denied = await run("source_test", { id, key: "mem" }, O());
     assert.deepEqual([denied.status, denied.code, denied.configureLink], ["error", "scope_denied", "https://portal.example/open?product=knowledge&path=/configure"]);
+  });
+});
+
+describe("review of PR #3: regressions", () => {
+  /** an answer that waits until `release()` so a test can change the page while the read is in flight */
+  function gatedAnswer() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    answer = async () => {
+      await gate;
+      return { status: "ok", output: ISSUES };
+    };
+    return () => release();
+  }
+  it("finding 1 (S1): a read in flight never lands in a key that flipped to push (agents cannot read it back)", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    const release = gatedAnswer();
+    const inFlight = run("artifact_refresh", { id }, A());
+    await new Promise((r) => setImmediate(r));
+    await run("artifact_update", { id, contract: { v: 1, inputs: [{ key: "tasks", kind: "push" }] } }, A()); // the flip
+    release();
+    const out = await inFlight;
+    assert.deepEqual(
+      out.results.find((r: Out) => r.key === "tasks"),
+      { key: "tasks", status: "not_approved", fetchedAt: null, code: "binding_changed" },
+    );
+    const got = await run("artifact_get", { id, include: ["data", "shape"] }, A());
+    assert.deepEqual(got.data, {}, "nothing the read returned is visible to the agent");
+    assert.deepEqual(got.shape, {});
+  });
+  it("finding 2: a revoke during the read wins (no snapshot appears afterwards)", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    const release = gatedAnswer();
+    const inFlight = refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now });
+    await new Promise((r) => setImmediate(r));
+    await run("source_revoke", { id, key: "tasks" }, O());
+    release();
+    await inFlight;
+    assert.equal(snap(id, "tasks"), undefined);
+  });
+  it("finding 2: an aborted tick stops reading", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    approve(id, "mem");
+    const ac = new AbortController();
+    ac.abort();
+    await refreshArtifact(db, callApp, id, { mode: "scheduled", slot: "s1", now: () => now, signal: ac.signal });
+    assert.deepEqual(calls, []);
+  });
+  it("finding 3: parallel artifact_refresh calls — exactly one runs", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    const outs = await Promise.allSettled([run("artifact_refresh", { id }, A()), run("artifact_refresh", { id }, A()), run("artifact_refresh", { id }, A())]);
+    assert.deepEqual(outs.map((o) => o.status).sort(), ["fulfilled", "rejected", "rejected"]);
+    assert.equal(calls.length, 1);
+  });
+  it("finding 4: agent refreshes have their own budget; budget exhaustion is never a failure", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    const { budgets } = await import("../src/refresh.ts");
+    const saved = budgets.manual;
+    budgets.manual = new CallBudget(0);
+    try {
+      const out = await run("artifact_refresh", { id }, A());
+      assert.deepEqual(out.results.find((r: Out) => r.key === "tasks"), { key: "tasks", status: "error", fetchedAt: null, code: "refresh_budget" });
+    } finally {
+      budgets.manual = saved;
+    }
+    const r = await run("trigger_approve", { id, everySeconds: 900 }, O());
+    assert.equal(r.refresh.state, "on");
+    await refreshTick({ id }, jobCtx(String(artifactRow(db, id)?.refresh_job_id)) as never);
+    assert.equal(snap(id, "tasks")?.status, "ok", "the schedule still reads after the agent budget is gone");
+  });
+  it("finding 5 + 13: a retry after a failure uses a new key; a held read keeps ONE key until decided", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    answer = async () => Promise.reject(new TbError("upstream_down", "x", 502));
+    await run("trigger_approve", { id, everySeconds: 3600 }, O());
+    const jobId = String(artifactRow(db, id)?.refresh_job_id);
+    await refreshTick({ id }, jobCtx(jobId) as never);
+    now = Number(artifactRow(db, id)?.next_refresh_at);
+    await refreshTick({ id }, jobCtx(jobId) as never);
+    assert.notEqual(calls[0]?.key, calls[1]?.key, "same slot, but a retry after a failure is a new key");
+    answer = async () => ({ status: "held", holdId: "hld_1", expiresAt: "x" });
+    calls = [];
+    for (let n = 0; n < 3; n++) {
+      now = Number(artifactRow(db, id)?.next_refresh_at ?? now) + 3_600_000;
+      await refreshTick({ id }, jobCtx(jobId) as never);
+    }
+    assert.equal(new Set(calls.map((c) => c.key)).size, 1, "one hold per read, not one per tick");
+  });
+  it("finding 6: trigger_approve on an archived page refuses BEFORE touching the job; archive stops and restore resumes", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    await run("artifact_archive", { id, archived: true }, O());
+    assert.equal(artifactRow(db, id)?.refresh_job_id, null, "archive cancels the job");
+    const before = jobsLog.length;
+    await rejects(run("trigger_approve", { id, everySeconds: 900 }, O()), "artifact_archived");
+    assert.equal(jobsLog.length, before, "no cancel, no enqueue");
+    await run("artifact_archive", { id, archived: false }, O());
+    assert.ok(artifactRow(db, id)?.refresh_job_id, "restore re-enqueues the approved schedule");
+  });
+  it("finding 7: a tick never overwrites a schedule that changed under it", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    const jobId = String(artifactRow(db, id)?.refresh_job_id);
+    const release = gatedAnswer();
+    const tick = refreshTick({ id }, jobCtx(jobId) as never);
+    await new Promise((r) => setImmediate(r));
+    await run("artifact_update", { id, contract: { v: 1, inputs: [{ key: "tasks", kind: "read", product: "kanban", op: "issues_list", input: { status: "blocked" }, projection: { path: "/issues", pick: ["title"], limit: 1 } }], triggers: [{ kind: "schedule", everySeconds: 300 }] } }, A());
+    release();
+    assert.deepEqual(await tick, { status: "done" });
+    assert.equal(artifactRow(db, id)?.refresh_state, "waiting_approval", "the agent's new proposal waits for the owner");
+  });
+  it("finding 8: the owner's lowered interval survives an agent update that keeps the same proposal", async () => {
+    const id = await page(); // proposes 900 s
+    await run("trigger_approve", { id, everySeconds: 3600 }, O()); // owner: hourly
+    await run("artifact_update", { id, view: { html: "<p>v2</p>" }, contract: (await run("artifact_get", { id }, A())).version.contract }, A());
+    const r = artifactRow(db, id);
+    assert.deepEqual([Number(r?.refresh_every_s), Number(r?.refresh_approved), r?.refresh_state], [3600, 1, "on"]);
+  });
+  it("finding 9: one paused source does not hide another source's failure", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    approve(id, "mem");
+    answer = async (c) => Promise.reject(new TbError(c.product === "kanban" ? "paused" : "upstream_down", "x", 503));
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    await refreshTick({ id }, jobCtx(String(artifactRow(db, id)?.refresh_job_id)) as never);
+    assert.equal(Number(artifactRow(db, id)?.consecutive_failures), 1);
+  });
+  it("finding 10: a tick that is not due yet does not read", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    const jobId = String(artifactRow(db, id)?.refresh_job_id);
+    await refreshTick({ id }, jobCtx(jobId) as never);
+    const r = await refreshTick({ id }, jobCtx(jobId) as never);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(r, { status: "again", afterMs: 900_000 });
+  });
+  it("finding 12: a pointer never walks the prototype", () => {
+    assert.equal(pointer({ a: 1 }, "/constructor"), undefined);
+    assert.equal(project({ a: 1 }, { path: "/__proto__" }), undefined);
+  });
+  it("finding 13: rate_limited is deferred, not a failure; source_approve refuses archived pages", async () => {
+    const id = await page();
+    approve(id, "tasks");
+    answer = async () => Promise.reject(new TbError("rate_limited", "slow down", 429));
+    await run("trigger_approve", { id, everySeconds: 900 }, O());
+    await refreshTick({ id }, jobCtx(String(artifactRow(db, id)?.refresh_job_id)) as never);
+    assert.equal(Number(artifactRow(db, id)?.consecutive_failures), 0);
+    await run("artifact_archive", { id, archived: true }, O());
+    const d = (await run("artifact_detail", { id }, O())).sources[0];
+    await rejects(run("source_approve", { id, key: d.key, digest: d.digest, viewers: false }, O()), "artifact_archived");
   });
 });
