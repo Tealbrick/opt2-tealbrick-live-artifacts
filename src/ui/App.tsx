@@ -4,28 +4,43 @@
 import { useSession } from "@opt2-tealbrick/miniapp-sdk/client";
 import { AppShell, appArt, appColour, Button, Notice, STANDARD_PAGES, Tag } from "@opt2-tealbrick/ui";
 import { useState } from "react";
-import { AgentsPage, BackupsPage, HoldsPage, portalHref, ReceiptsPage, standardRoutes, useHoldList, useNav } from "./standard.tsx";
+import { Gallery } from "./gallery.tsx";
+import { useAppNav } from "./nav.ts";
+import { ArtifactPage } from "./page.tsx";
+import { SettingsPage } from "./settings.tsx";
+import { AgentsPage, BackupsPage, HoldsPage, portalHref, ReceiptsPage, useHoldList } from "./standard.tsx";
 
 const NAME = "Live Artifacts";
+/** The kit's header colour id for this app is `artifacts` (--tb-app-artifacts); the product id `live-artifacts` has none, which left the neutral header. */
+const COLOUR_ID = "artifacts";
 /** Where scripts/build-ui.ts puts this app's still (`stills/`, next to this module in the hashed asset directory, C61). */
 const STILLS = new URL("./stills/", import.meta.url).href;
 
-/** Shell page id → path under the base `/a/live-artifacts/`. Holds is the launch page (manifest `ui.launchPath`), Agents & scopes is `ui.configurePath`. */
-const ROUTES = standardRoutes();
-const PAGES = STANDARD_PAGES.filter((p) => p.id in ROUTES);
+/** Nav order of the mockup: Gallery, Page (only while a page is open), Holds, Receipts, Agents & scopes, Settings, Backups & export.
+ *  Paths are in ./nav.ts: the Gallery is the launch page (manifest `ui.launchPath`), Agents & scopes is `ui.configurePath`. */
+const standard = (id: string) => STANDARD_PAGES.find((p) => p.id === id) ?? { id, label: id };
 
 export function App() {
   const { principal, status, signOut } = useSession();
-  const nav = useNav(ROUTES, "holds");
+  const nav = useAppNav();
   const holds = useHoldList();
   const [notice, setNotice] = useState<string | null>(null);
+  const [review, setReview] = useState(0);
   const [portal] = useState(portalHref);
-  const pages = PAGES.map((p) => (p.id === "holds" ? { ...p, badge: holds.holds?.length || null } : p));
+  const pages = [
+    { id: "gallery", label: "Gallery", badge: review || null },
+    ...(nav.open ? [{ id: "artifact", label: "Page" }] : []),
+    { ...standard("holds"), badge: holds.holds?.length || null },
+    standard("receipts"),
+    standard("agents"),
+    { id: "settings", label: "Settings" },
+    standard("backups"),
+  ];
   const signedIn = status === "signed_in" && principal;
   return (
     <AppShell
       title={NAME}
-      colour={appColour("live-artifacts")}
+      colour={appColour(COLOUR_ID)}
       art={appArt("live-artifacts", STILLS)}
       portalHref={portal}
       pages={pages}
@@ -59,14 +74,20 @@ export function App() {
         ) : null
       }
     >
-      {!signedIn ? null : nav.page === "agents" ? (
-        <AgentsPage />
+      {!signedIn ? null : nav.page === "artifact" && nav.open ? (
+        <ArtifactPage key={nav.open} id={nav.open} onGone={nav.closePage} />
+      ) : nav.page === "agents" ? (
+        <AgentsPage lede="A gallery holds pages. Each agent has its own gallery and can use the Shared gallery. Reading a page includes its code and the shape of its data, never the values read from your apps." />
       ) : nav.page === "receipts" ? (
-        <ReceiptsPage />
+        <ReceiptsPage lede="What agents did through Live Artifacts. Inputs are kept only as digests; pages, data and link addresses are never in a receipt." />
+      ) : nav.page === "settings" ? (
+        <SettingsPage />
       ) : nav.page === "backups" ? (
-        <BackupsPage text="A backup of everything in this app runs every night inside your deployment. The export is a readable copy you can keep." />
-      ) : (
+        <BackupsPage text="Live Artifacts backs up its data every night to its own volume. The export has pages, versions, data sources and the last data. It has no link addresses: only their digests are stored." />
+      ) : nav.page === "holds" ? (
         <HoldsPage list={holds} only={nav.hold} empty="No calls wait for your approval." />
+      ) : (
+        <Gallery onOpen={nav.openPage} onCounts={setReview} />
       )}
     </AppShell>
   );

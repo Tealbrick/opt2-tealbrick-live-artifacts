@@ -88,6 +88,7 @@ export function toDetail(db: Db, r: Row, now: number) {
     autoPublish: String(r.auto_publish) as "owner" | "agent",
     origin: { kind: String(r.origin_kind), ref: r.origin_ref === null ? null : String(r.origin_ref) },
     forkedFrom: r.forked_from === null ? null : String(r.forked_from),
+    createdAt: isoNow(Number(r.created_at)),
   };
 }
 

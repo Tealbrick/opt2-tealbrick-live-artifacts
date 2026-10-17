@@ -1,0 +1,36 @@
+/* Live Artifacts layout only: the gallery cards, the preview frame and the review blocks of the approved mockup
+   (coordination/design/mockups/build-app-live-artifacts.ts, C185). Buttons, fields, selects, tags, notices, tables and
+   dialogs are the kit; page helpers (.app-page, .split, .ruled, .item, .view) are pages.css. Tokens only (check-system src). */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: var(--tb-s3); }
+.cards > .tb-card { display: grid; gap: var(--tb-s3); align-content: start; }
+.cards h3 { font-size: 1.0625rem; font-weight: var(--tb-weight-head); line-height: 22px; overflow-wrap: anywhere; }
+.meta { color: var(--tb-muted); font-size: var(--tb-text-tag); font-weight: var(--tb-weight-nav); line-height: 20px; overflow-wrap: anywhere; }
+.la-head { gap: var(--tb-s2); }
+.la-tags { gap: 6px; }
+.la-desc { max-width: 62ch; }
+.la-advice { margin: 0; padding-left: var(--tb-s5); display: grid; gap: var(--tb-s2); color: var(--tb-ink-soft); }
+
+/* the page: what a viewer would see, in the viewer frame */
+.vshell { display: grid; gap: 10px; padding: 14px; border-radius: var(--tb-radius-brick); background: var(--tb-tile); box-shadow: var(--tb-ring-strong); }
+.vbanner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 10px 12px; border-radius: var(--tb-radius-brick); background: var(--tb-paper); box-shadow: var(--tb-ring); color: var(--tb-ink-soft); font-size: var(--tb-text-label); }
+.vbanner strong { color: var(--tb-ink); font-weight: var(--tb-weight-label); }
+.sandbox { display: grid; gap: 18px; padding: 18px; min-height: 220px; border-radius: var(--tb-radius-brick); background: var(--tb-paper); box-shadow: inset 0 0 0 2px var(--tb-line-strong); }
+.sandbox.la-sandbox { padding: 0; align-content: center; overflow: hidden; }
+.sandbox.la-sandbox > :not(.la-frame) { margin: var(--tb-s5); }
+.la-frame { display: block; width: 100%; height: 440px; border: 0; background: var(--tb-paper); }
+
+.la-review { display: grid; gap: var(--tb-s3); }
+.la-review h2, .split aside h2 { font-size: 1.25rem; }
+.split aside .item { grid-template-columns: auto minmax(0, 1fr); }
+.split aside .item > .side { grid-column: 2; grid-row: auto; justify-content: flex-start; padding-top: 6px; }
+.item h3 .tb-tag { margin-left: var(--tb-s2); vertical-align: middle; }
+.item .la-test { grid-column: 2; display: grid; gap: var(--tb-s2); padding-top: var(--tb-s2); }
+
+/* review dialog */
+.la-checks { display: grid; gap: var(--tb-s3); }
+.la-source { display: grid; gap: var(--tb-s2); padding: var(--tb-s4); border-radius: var(--tb-radius-brick); background: var(--tb-plate); }
+.la-source h4 { font-size: 1.0625rem; font-weight: var(--tb-weight-label); line-height: 22px; }
+.la-schedule { gap: var(--tb-s2); }
+.split aside section[aria-label="Schedule"] { padding-bottom: var(--tb-s3); } /* the Schedule box has no ruled rows under it, so Links would sit tight against its button */
+
+@media (max-width: 720px) { .la-frame { height: 320px; } }

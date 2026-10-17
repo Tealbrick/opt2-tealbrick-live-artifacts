@@ -385,6 +385,8 @@ export const handlers = {
         sources: sourcesOf(ctx.db, i.id),
         links: linksOf(ctx.db, i.id, now),
         activity: activityOf(ctx.db, i.id),
+        // the write-time lint of this version, for step 1 of the owner's review (advice; errors were refused at write)
+        lint: lintHtml(Buffer.from(v.html as Uint8Array).toString("utf8")),
       };
     },
   }),
