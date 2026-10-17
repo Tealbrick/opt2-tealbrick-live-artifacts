@@ -80,6 +80,7 @@ const DETAIL = {
   links: [{ id: "lnk_1", label: "Novak Dental", createdBy: actor("Scout"), createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-21T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 14, lastSeenDay: "2026-10-13", status: "active" }],
   activity: [],
   lint: [],
+  runsScripts: false,
 };
 
 interface Stub {
@@ -483,7 +484,7 @@ const viewerReady = () => {
 };
 const LINK_ROWS = [
   { id: "lnk_a", artifactId: "art_weekly", artifactTitle: "Weekly operations", label: "Novak Dental", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-21T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 14, lastSeenDay: "2026-10-13", status: "active" },
-  { id: "lnk_b", artifactId: "art_weekly", artifactTitle: "Weekly operations", label: "Board meeting", createdBy: actor("Scout"), createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-16T08:00:00.000Z", revokedAt: null, pinVersion: 6, views: 3, lastSeenDay: "2026-10-12", status: "active" },
+  { id: "lnk_b", artifactId: "art_weekly", artifactTitle: "Weekly operations", label: "Board meeting", createdBy: actor("Scout"), createdAt: "2026-10-10T08:00:00.000Z", expiresAt: "2026-10-16T08:00:00.000Z", revokedAt: null, pinVersion: 6, views: 3, lastSeenDay: "2026-10-12", runsScripts: true, status: "active" },
   { id: "lnk_c", artifactId: "art_hiring", artifactTitle: "Hiring pipeline", label: "Recruiter", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-10-01T08:00:00.000Z", expiresAt: "2026-10-08T08:00:00.000Z", revokedAt: "2026-10-05T08:00:00.000Z", pinVersion: null, views: 2, lastSeenDay: null, status: "revoked" },
   { id: "lnk_d", artifactId: "art_onboard", artifactTitle: "Client onboarding status", label: "", createdBy: { type: "person", id: "per_1", name: "Owner" }, createdAt: "2026-09-26T08:00:00.000Z", expiresAt: "2026-10-03T08:00:00.000Z", revokedAt: null, pinVersion: null, views: 21, lastSeenDay: "2026-09-07", status: "expired" },
 ];
@@ -500,7 +501,7 @@ describe("Links page", () => {
       rows.map((r) => [...r.querySelectorAll("td")].map((c) => c.textContent)),
       [
         ["Weekly operations", "Novak Dental", "you", "21 Oct 2026", "14", "Active", "Revoke"],
-        ["Weekly operations", "Board meeting", "Scout, approved by you", "16 Oct 2026", "3", "Active", "Revoke"],
+        ["Weekly operations", "Board meeting", "Scout, approved by you", "16 Oct 2026", "3", "Active Runs scripts", "Revoke"],
         ["Hiring pipeline", "Recruiter", "you", "8 Oct 2026", "2", "Revoked", ""],
         ["Client onboarding status", "No label", "you", "3 Oct 2026", "21", "Ended", ""],
       ],
@@ -692,7 +693,12 @@ describe("Review and share: step 3", () => {
     assert.match(dialog.textContent ?? "", /Who may open this page\?/);
     assert.match(dialog.textContent ?? "", /Anyone who has the address can open it until it ends or you revoke it/);
     assert.match(dialog.textContent ?? "", /What a link cannot promise/);
+<<<<<<< HEAD
     assert.match(dialog.textContent ?? "", /In some browsers page code can send what the page shows, and what a viewer types, to outside sites/);
+=======
+    assert.match(dialog.textContent ?? "", /This page runs no scripts\. A link shows it without scripts\. If a later version gains scripts, this link still shows it without scripts\./);
+    assert.doesNotMatch(dialog.textContent ?? "", /This page runs scripts\./);
+>>>>>>> 3a72b55 (S7/C239: owner UI shows the runs-scripts sentence and tag; canary for the scriptless public link; skill, security notes, conformance fixture)
     assert.match(dialog.textContent ?? "", /Everything the page shows can be copied by whoever sees it/);
     assert.match(dialog.textContent ?? "", /wait for you before link holders see them/);
     assert.match(dialog.textContent ?? "", /1 link of this page is active\. At most 5\./);
@@ -709,6 +715,23 @@ describe("Review and share: step 3", () => {
     await flush();
     assert.doesNotMatch(m.host.textContent ?? "", /tbv_SECRET/, "closed: the address is gone");
     assert.equal(callsOf("link_create").length, 1, "Done sends nothing");
+    await m.unmount();
+  });
+  it("a page that runs scripts: step 3 shows the exact sentence the owner approves", async () => {
+    reset();
+    viewerReady();
+    stub.out.artifact_detail = { ...DETAIL, runsScripts: true };
+    const m = await mountPage();
+    const dialog = await toStep3(m);
+    assert.ok((dialog.textContent ?? "").includes("This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites."));
+    assert.doesNotMatch(dialog.textContent ?? "", /This page runs no scripts/);
+    await m.unmount();
+  });
+  it("the page's link list tags a link that may run scripts", async () => {
+    reset();
+    stub.out.artifact_detail = { ...DETAIL, links: [{ ...DETAIL.links[0], runsScripts: true }] };
+    const m = await mountPage();
+    assert.match(m.host.textContent ?? "", /Novak Dental\s*Runs scripts/);
     await m.unmount();
   });
   it("without a viewer address Create link is off and the notice says why; Finish without a link closes", async () => {

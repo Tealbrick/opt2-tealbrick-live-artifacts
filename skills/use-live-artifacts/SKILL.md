@@ -40,6 +40,19 @@ Call `live-artifacts__artifact_create` with a `title` and `view.html`. Send an i
 </script>
 ```
 
+## Scripts or no scripts
+
+The app decides from your page, never from what you say: a page that has a `<script>` or an inline event handler
+(`onclick=` and the like) "runs scripts". A page without scripts is shown without scripts. A page that runs scripts needs
+the owner to approve an extra sentence when you ask for a link: "This page runs scripts. In some browsers, scripts can
+contact outside sites, so viewers' IP addresses and anything they type can reach those sites." So make a page without
+scripts when you can. It can still show your data: put `data-tb-text="key.path"` on an element (for example
+`<b data-tb-text="numbers.total"></b>` or `data-tb-text="tasks.0.title"`) and the app writes that value as text into it
+when it serves the page, and again when the data changes. The value is text only, shown to link viewers only if the source is
+shown to them. `artifact_get` answers `shareExpect.runsScripts`; pass it back unchanged. If your page gains scripts after the
+owner approved a link request, the call is refused with `page_changed`, and a link that was approved for a page without scripts
+always shows the page without scripts.
+
 ## Give it data
 
 Declare the data in `contract.inputs` (at most 8 sources, each with a `key`):

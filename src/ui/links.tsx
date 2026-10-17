@@ -3,6 +3,7 @@
 // build-app-live-artifacts.ts `links`). Kit components only; the address of a link is shown ONCE, when it is made.
 import { Button, CopyBlock, Dialog, EmptyState, Field, Notice, Select, Table, Tag, TextInput, TextLink } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RUNS_SCRIPTS_SENTENCE } from "../scripts-text.ts";
 import { dateOf, explain, type LinkRow, lifetimeOptions, plural, run, type Version } from "./api.ts";
 import { Failure, LoadFailed, PageHead, useAct } from "./common.tsx";
 
@@ -200,6 +201,14 @@ export function LinksPage({ onOpen }: { onOpen: (id: string) => void }) {
                     <td className="num">{l.views}</td>
                     <td>
                       <Tag status={LINK_STATUS_TAG[l.status].status}>{LINK_STATUS_TAG[l.status].text}</Tag>
+                      {l.runsScripts ? (
+                        <>
+                          {" "}
+                          <Tag status="needs-you" title={RUNS_SCRIPTS_SENTENCE}>
+                            Runs scripts
+                          </Tag>
+                        </>
+                      ) : null}
                     </td>
                     <td>
                       {l.status === "active" ? (

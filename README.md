@@ -22,6 +22,7 @@ operation id (`src/app.ts`) and plain migrations (`migrations/`).
 | `src/viewer.ts` | the viewer route handler (the SDK serves `/v/live-artifacts/…` and strips the prefix), tokens, tickets, CSPs |
 | `src/contract.ts` | the artifact contract (inputs, triggers; later-stage fields refused) and the binding digest |
 | `src/sanitize.ts` | the sanitizer every served agent document passes through (parse5; removes link/base/meta http-equiv/portal/speculation rules and outside URLs; fails closed to a fixed document). One call site: `servedDocument`, used by the viewer. Replaced by the SDK helper when it ships |
+| `src/scripts-text.ts` | the sentence the owner approves when a page runs scripts (server and UI use the same text) |
 | `SECURITY.md` | what a page can and cannot do, and the accepted residuals R1–R5 |
 | `src/lint.ts` | write-time HTML lint (advice; the boundary is the sandboxed views origin) |
 | `src/limits.ts` | every size and count limit |

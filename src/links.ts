@@ -6,6 +6,7 @@ import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { parseStoredContract, sourceDigest } from "./contract.ts";
 import { type ShareExpect, shareMismatch, versionRunsScripts, visiblePushData } from "./expect.ts";
 import { LIMITS } from "./limits.ts";
+import { RUNS_SCRIPTS_SENTENCE } from "./scripts-text.ts";
 import { type Actor, activeLinkCount, artifactRow, getSettings, logActivity, notFound, type PublishExpect, pageChanged, versionRow } from "./store.ts";
 import { newToken } from "./viewer.ts";
 
@@ -142,8 +143,8 @@ const kib = (bytes: number): string => `${Math.max(1, Math.round(bytes / KIB))} 
 /** "sha256:<hex>" → its first 16 hex digits, enough for the owner to compare with what the agent reports. */
 const shortDigest = (d: string): string => `${d.replace(/^sha256:/, "").slice(0, 16)}…`;
 const NAME_MAX = 60;
-/** The sentence the owner approves when a page runs scripts (C239). Exactly this text. */
-export const RUNS_SCRIPTS_SENTENCE = "This page runs scripts. In some browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites.";
+
+export { RUNS_SCRIPTS_SENTENCE };
 
 /** One source in the words the owner reads: its quoted label and what it is (all agent-written text is quoted). */
 function sourceLine(s: Row): string {

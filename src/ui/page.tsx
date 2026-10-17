@@ -4,6 +4,7 @@
 // of the review makes a link too. The address of a new link is shown once.
 import { appName, Button, Dialog, Field, Notice, StepFlow, Swatch, Switch, Table, Tag, TextInput, TextLink } from "@opt2-tealbrick/ui";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { RUNS_NO_SCRIPTS_SENTENCE, RUNS_SCRIPTS_SENTENCE } from "../scripts-text.ts";
 import {
   type ArtifactInfo,
   ago,
@@ -486,7 +487,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 <p className="tb-soft">
                   Version {detail.version.n} is live: {Math.max(1, Math.round(detail.version.bytes / KIB))} KiB, written by {detail.version.createdBy.name} on {stamp(detail.version.createdAt)}. The preview on the page shows it as a viewer would see it.
                 </p>
-                <p className="tb-soft">The page cannot read your Tealbrick data or session. In some browsers a page with scripts can send what it shows to outside sites. Do not type private information into it. A viewer can still copy what is on screen.</p>
+                <p className="tb-soft">{detail.runsScripts ? RUNS_SCRIPTS_SENTENCE : RUNS_NO_SCRIPTS_SENTENCE} The page cannot read your Tealbrick data or session. A viewer can still copy what is on screen.</p>
                 {detail.lint.length > 0 ? (
                   <ul className="tb-list">
                     {detail.lint.map((l) => (
@@ -569,6 +570,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                       <span className="tb-stack">
                         <b>What a link cannot promise</b>
                         <ul className="la-advice">
+                          <li>{detail.runsScripts ? RUNS_SCRIPTS_SENTENCE : `${RUNS_NO_SCRIPTS_SENTENCE} If a later version gains scripts, this link still shows it without scripts.`}</li>
                           <li>The page cannot read your Tealbrick data or session. In some browsers page code can send what the page shows, and what a viewer types, to outside sites. Do not type private information into a page. Outside files in the page markup are removed before it is shown.</li>
                           <li>Everything the page shows can be copied by whoever sees it.</li>
                           <li>A new version or new numbers from an agent wait for you before link holders see them. You can switch that off on the page.</li>
@@ -730,7 +732,12 @@ function LinkItem({ l, busy, onRevoke }: { l: Link; busy: boolean; onRevoke: () 
     <div className="item">
       <Swatch />
       <h3>
-        {l.label || "No label"} {l.status === "active" ? null : <Tag status={tag.status}>{tag.text}</Tag>}
+        {l.label || "No label"} {l.status === "active" ? null : <Tag status={tag.status}>{tag.text}</Tag>}{" "}
+        {l.runsScripts ? (
+          <Tag status="needs-you" title={RUNS_SCRIPTS_SENTENCE}>
+            Runs scripts
+          </Tag>
+        ) : null}
       </h3>
       <p>
         Ends {dateOf(l.expiresAt)} · {l.pinVersion === null ? "latest version" : `pinned to version ${l.pinVersion}`}

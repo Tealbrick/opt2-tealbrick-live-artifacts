@@ -73,7 +73,8 @@
         "htmlSha256": "${shaA}",
         "title": "Conformance page",
         "data": [],
-        "sourcesSha256": "${srcA}"
+        "sourcesSha256": "${srcA}",
+        "runsScripts": false
       }
     },
     "artifact_publish": {

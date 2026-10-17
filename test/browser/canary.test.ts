@@ -258,7 +258,7 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
 
   let seq = 0;
   /** A page (viewer link) with the given body, written straight into the table. */
-  function addPage(html: string): string {
+  function addPage(html: string, opts: { scriptsOk?: boolean; total?: number } = {}): string {
     const n = ++seq;
     const id = `01J${"0".repeat(19)}R${String(n).padStart(3, "0")}`;
     const now = Date.now();
@@ -269,10 +269,14 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     db.prepare(
       "INSERT INTO la_version (artifact_id, n, html, html_sha256, contract_json, contract_sha256, bytes, created_by_type, created_by_id, created_by_name, created_at) VALUES (?, 1, ?, 'x', '{}', 'x', 1, 'agent', 'agt_p', 'Mallory', ?)",
     ).run(`art_${id}`, Buffer.from(html, "utf8"), now);
+    if (opts.total !== undefined) {
+      db.prepare("INSERT INTO la_source (artifact_id, key, kind, digest, approved_digest, viewers) VALUES (?, 'n', 'push', 'd', 'd', 1)").run(`art_${id}`);
+      db.prepare("INSERT INTO la_snapshot (artifact_id, key, data_json, bytes, fetched_at, status) VALUES (?, 'n', ?, 12, ?, 'ok')").run(`art_${id}`, JSON.stringify({ total: opts.total }), now);
+    }
     const tok = newToken();
     db.prepare(
-      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at) VALUES (?, ?, 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?)",
-    ).run(`lnk_${id}`, `art_${id}`, opaqueDigest(tok), now, now + 3_600_000);
+      "INSERT INTO la_link (id, artifact_id, kind, token_digest, label, created_by_type, created_by_id, created_by_name, created_at, expires_at, scripts_ok) VALUES (?, ?, 'viewer', ?, '', 'person', 'per_x', 'Owner', ?, ?, ?)",
+    ).run(`lnk_${id}`, `art_${id}`, opaqueDigest(tok), now, now + 3_600_000, opts.scriptsOk === false ? 0 : 1);
     return tok;
   }
 
@@ -320,6 +324,46 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     await page.waitForTimeout(WAIT_MS);
     assert.deepEqual(hits, [], `a static page must reach nothing; saw: ${hits.join(", ")}`);
     assert.equal(conns, 0, "…and open no connection (preconnect, dns-prefetch)");
+    await page.close();
+  });
+
+  it("PUBLIC LINK of a script-free page (scriptless render): script-src none, sandbox without allow-scripts, data inlined, 0 requests and 0 connections, and it renders", async () => {
+    hits.length = 0;
+    conns = 0;
+    const tok = addPage(staticPage(canary.origin).replace("</body>", '<p id="t" data-tb-text="n.total">?</p></body>'), { total: 42 });
+    const page = await newPage();
+    await page.goto(`${views.origin}/v/live-artifacts/${tok}`);
+    const frame = page.frameLocator("iframe");
+    await frame.locator("#m", { hasText: "static-marker" }).waitFor({ timeout: 10_000 });
+    assert.equal(await frame.locator("#t").textContent(), "42", "the data was inlined when the page was served");
+    assert.equal(await page.evaluate(() => (document.querySelector("iframe") as HTMLIFrameElement).getAttribute("sandbox")), "", "framed without allow-scripts");
+    const data = (await (await fetch(`${views.origin}/v/live-artifacts/${tok}/data`)).json()) as { doc: string; scriptless: boolean; runsScripts: boolean };
+    assert.equal(data.scriptless, true);
+    assert.equal(data.runsScripts, false);
+    const doc = await fetch(`${views.origin}/v/live-artifacts/${data.doc}`, { headers: { "sec-fetch-dest": "iframe" } });
+    const csp = doc.headers.get("content-security-policy") ?? "";
+    assert.match(csp, /^sandbox; /);
+    assert.match(csp, /script-src 'none'/);
+    assert.ok(!(await doc.text()).includes("<script"), "no script element in what was served");
+    await page.waitForTimeout(WAIT_MS);
+    assert.deepEqual(hits, [], `saw: ${hits.join(", ")}`);
+    assert.equal(conns, 0);
+    await page.close();
+  });
+
+  it("a link NOT approved for scripts shows a script page without scripts: nothing runs, 0 requests, 0 connections", async () => {
+    hits.length = 0;
+    conns = 0;
+    const tok = addPage(hostilePage(canary.origin).replace("<h1>hostile</h1>", '<h1 id="m">hostile-marker</h1>'), { scriptsOk: false });
+    const page = await newPage();
+    const logs: string[] = [];
+    page.on("console", (m: { text(): string }) => logs.push(m.text()));
+    await page.goto(`${views.origin}/v/live-artifacts/${tok}`);
+    await page.frameLocator("iframe").locator("#m", { hasText: "hostile-marker" }).waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(WAIT_MS);
+    assert.ok(!logs.includes("hostile-ran"), "the page's script did not run");
+    assert.deepEqual(hits, [], `saw: ${hits.join(", ")}`);
+    assert.equal(conns, 0);
     await page.close();
   });
 

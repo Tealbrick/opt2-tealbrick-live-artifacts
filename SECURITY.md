@@ -16,6 +16,12 @@ It is the threat model of record for the app (the longer design is internal).
   content; on any other element, such as a link, a form, `body` or `td`, only the attribute goes and the content stays), and every
   CSS `url()`, `@import` and `image-set()` that is not `data:` or relative (the `url()` becomes `url("data:,")`). If the parser fails, the page is too large or too deeply nested,
   or the sanitized output does not pass a second parse, the fixed "This page cannot be shown" document is served.
+- A page without script (decided by the server from the sanitized document: no `<script>`, no inline event handler) is served as a
+  scriptless render: CSP `script-src 'none'` and a sandbox without `allow-scripts`, data inlined at serve time (`data-tb-text`),
+  no fetch. A link the owner approved for a page without scripts always shows the scriptless render, even if a later version gains
+  scripts (`la_link.scripts_ok`). A page that runs scripts needs the owner to approve the sentence "This page runs scripts. In some
+  browsers, scripts can contact outside sites, so viewers' IP addresses and anything they type can reach those sites."; the share
+  request is bound to it (`expect.runsScripts`).
 - A page WITHOUT script therefore makes no network request by static markup (checked by `test/browser/canary.test.ts` with Chrome on a developer machine; it is not a CI gate).
 
 ## After a restore
