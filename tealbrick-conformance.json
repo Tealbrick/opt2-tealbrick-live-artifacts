@@ -29,6 +29,18 @@
       "capture": {
         "pageA": "/id"
       }
+    },
+    {
+      "id": "page_a_seen",
+      "as": "agentA",
+      "op": "artifact_get",
+      "input": {
+        "id": "${pageA}"
+      },
+      "capture": {
+        "shaA": "/version/sha256",
+        "verA": "/version/n"
+      }
     }
   ],
   "inputs": {
@@ -61,12 +73,20 @@
     "artifact_share": {
       "id": "${pageA}",
       "label": "Conformance link",
-      "expiresInDays": 7
+      "expiresInDays": 7,
+      "expect": {
+        "version": "${verA}",
+        "htmlSha256": "${shaA}",
+        "title": "Conformance page"
+      }
     },
     "artifact_publish": {
       "id": "${pageA}",
       "version": 1,
-      "data": []
+      "data": [],
+      "expect": {
+        "htmlSha256": "${shaA}"
+      }
     },
     "artifact_link_revoke": {
       "linkId": "lnk_00000000000000000000000000"

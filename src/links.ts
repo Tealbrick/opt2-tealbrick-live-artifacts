@@ -5,7 +5,7 @@ import { digest, opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import { parseStoredContract, sourceDigest } from "./contract.ts";
 import { LIMITS } from "./limits.ts";
-import { type Actor, activeLinkCount, artifactRow, getSettings, logActivity, notFound, versionRow } from "./store.ts";
+import { type Actor, activeLinkCount, artifactRow, getSettings, logActivity, notFound, type PublishExpect, pageChanged, versionRow } from "./store.ts";
 import { newToken } from "./viewer.ts";
 
 const DAY_MS = 86_400_000;
@@ -26,6 +26,9 @@ export interface CreateLinkArgs {
   expiresInDays?: number | undefined;
   /** a version number to show for the link's whole life; null or absent = follow the live version */
   pin?: number | null | undefined;
+  /** an agent's link: the page the owner approved (the version it shows, its sha256 and the title); refused with
+   *  page_changed when the page is not exactly that any more. The owner's own link has no `expect`. */
+  expect?: { version: number; htmlSha256: string; title: string } | undefined;
   by: Actor;
 }
 export interface CreatedLink {
@@ -46,6 +49,11 @@ export function createLink(db: Db, a: CreateLinkArgs, now: number): CreatedLink 
     if (String(art.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
     const pin = a.pin ?? null;
     if (pin !== null && !versionRow(db, a.artifactId, pin)) throw new TbError("version_unknown", `version ${pin} does not exist (it may have been pruned)`, 404);
+    if (a.expect) {
+      const shown = pin ?? Number(art.live_version);
+      const v = versionRow(db, a.artifactId, shown);
+      if (!v || a.expect.version !== shown || a.expect.htmlSha256 !== String(v.html_sha256) || a.expect.title !== String(art.title)) throw pageChanged("the page");
+    }
     if (activeLinkCount(db, a.artifactId, now) >= LIMITS.linksPerArtifact)
       throw new TbError("links_limit_artifact", `a page has at most ${LIMITS.linksPerArtifact} active links; revoke one first`, 409);
     if (activeWorkspaceLinks(db, now) >= LIMITS.linksPerWorkspace) throw new TbError("links_limit_workspace", `a workspace has at most ${LIMITS.linksPerWorkspace} active links; revoke one first`, 409);
@@ -116,20 +124,24 @@ export function listLinks(db: Db, now: number) {
 // ─────────────────────────────────────────────────────────── hold texts (DESIGN T4, §3.1)
 
 const KIB = 1024;
-/** Agent-written text (titles, labels) in a hold: one line, no control characters, so it cannot fake lines of the hold text. */
+/** Agent-written text (titles, labels, names) in a hold: one line, no control or invisible format characters, so it cannot
+ *  fake lines of the hold text or hide in it. */
 const clip = (s: string, n: number): string => {
-  const one = s.replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
+  const one = s.replace(/\p{Cf}+/gu, "").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim();
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
+/** A clipped agent text as a JSON string, so quotes and backslashes in it cannot end the quotation. */
+const quote = (s: string, n: number): string => JSON.stringify(clip(s, n));
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const kib = (bytes: number): string => `${Math.max(1, Math.round(bytes / KIB))} KiB`;
 /** "sha256:<hex>" → its first 16 hex digits, enough for the owner to compare with what the agent reports. */
 const shortDigest = (d: string): string => `${d.replace(/^sha256:/, "").slice(0, 16)}…`;
+const NAME_MAX = 60;
 
 /** One source in the words the owner reads: its label and what it is. */
 function sourceLine(s: Row): string {
   const label = clip(String(s.label || s.key), 60);
-  return s.kind === "push" ? `${label} (data pushed by an agent)` : `${label} (${String(s.product)} ${String(s.op)})`;
+  return s.kind === "push" ? `${label} (data pushed by an agent)` : `${label} (${clip(String(s.product), 32)} ${clip(String(s.op), 64)})`;
 }
 /** Sources the viewer links of this page show (approved and marked "show to people with a link") and the ones they do not. */
 function sourcesShown(db: Db, artifactId: string): { shown: string[]; hidden: string[] } {
@@ -142,46 +154,107 @@ function sourcesShown(db: Db, artifactId: string): { shown: string[]; hidden: st
   return { shown, hidden };
 }
 const listOr = (items: string[], none: string): string => (items.length === 0 ? none : items.join("; "));
+const versionLine = (n: number, v: Row): string => `Version ${n}: ${kib(Number(v.bytes))}, sha256 ${shortDigest(String(v.html_sha256))}, written by ${quote(String(v.created_by_name), NAME_MAX)}.`;
 
-/** What the owner reads before approving `artifact_share`: the page, who gets it, how long, which version, which data. */
-export function shareHoldText(db: Db, i: { id: string; label?: string | undefined; expiresInDays?: number | undefined; pin?: number | null | undefined }, now: number): string {
+export interface ShareHoldInput {
+  id: string;
+  label?: string | undefined;
+  expiresInDays?: number | undefined;
+  pin?: number | null | undefined;
+  expect?: { version: number; htmlSha256: string; title: string } | undefined;
+}
+/** What the owner reads before approving `artifact_share`: the page (title, version, size, sha256, author), who gets it,
+ *  how long, which data. `viewerMissing`: the app saw that the bridge has no viewer address (the SDK gives a hold view
+ *  only the input, so this is the last answer seen on any call). */
+export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { viewerMissing?: boolean } = {}): string {
   const a = artifactRow(db, i.id);
   if (!a) return `Create a public link to the live page ${i.id}.`;
   const days = i.expiresInDays ?? getSettings(db).defaultLinkDays;
   const { shown, hidden } = sourcesShown(db, i.id);
   const pin = i.pin ?? null;
-  const version =
-    pin === null
-      ? `It always shows the live version of the page (now version ${Number(a.live_version)}) and follows every update you approve.`
-      : `It shows version ${pin} only, whatever happens to the page later.`;
+  const live = Number(a.live_version);
+  const staged = a.staged_version === null ? null : Number(a.staged_version);
+  const showsN = pin ?? live;
+  const v = versionRow(db, i.id, showsN);
   const have = activeLinkCount(db, i.id, now);
-  return [
-    `Create a public link to the live page "${clip(String(a.title), 80)}", made by ${String(a.created_by_name)}.`,
-    `Anyone who has the link can open the page without an account. The link ends ${plural(days, "day")} after you approve${i.label ? ` (label: "${clip(i.label, 40)}")` : ""}. You can revoke it at any time.`,
-    version,
+  const lines: string[] = [];
+  if (opts.viewerMissing) lines.push("This page cannot be shared yet (no viewer address); approving changes nothing.");
+  lines.push(
+    `Create a public link to the live page ${quote(String(a.title), 80)}, made by ${quote(String(a.created_by_name), NAME_MAX)}.`,
+    `Anyone who has the link can open the page without an account. The link ends ${plural(days, "day")} after you approve${i.label ? ` (label: ${quote(i.label, 40)})` : ""}. You can revoke it at any time.`,
+  );
+  if (pin === null) lines.push(`The link follows the live version of the page (now version ${live}) and every version you make live.`);
+  else lines.push(`The link shows the page code of version ${pin} only: the page code stays at version ${pin}; title and data still follow updates you approve.`);
+  if (!v) lines.push(`Version ${showsN} does not exist (it may have been pruned). The call will be refused.`);
+  else {
+    lines.push(versionLine(showsN, v));
+    if (pin !== null && staged === pin) lines.push(`Version ${pin} has not been reviewed yet: it is staged and waits for you. It is not live.`);
+    else if (pin !== null && pin > live) lines.push(`Version ${pin} is newer than the live version (now version ${live}) and has not been reviewed yet.`);
+    else if (pin !== null && pin < live) lines.push(`Version ${pin} is older than the live version (now version ${live}).`);
+  }
+  if (String(a.auto_publish) === "agent") lines.push("Later agent changes go live on this link WITHOUT your approval (you allowed that for this page).");
+  const e = i.expect;
+  if (e) {
+    const same = v !== undefined && e.version === showsN && e.htmlSha256 === String(v.html_sha256) && e.title === String(a.title);
+    lines.push(
+      same
+        ? "The agent saw exactly this page. If the page changes before the call runs, the call is refused (page_changed)."
+        : `The agent saw version ${e.version}, sha256 ${shortDigest(e.htmlSha256)}, title ${quote(e.title, 80)}. That is not the page as it is now; the call will be refused (page_changed).`,
+    );
+  }
+  lines.push(
     `The page shows these data sources to people with the link: ${listOr(shown, "none (it shows no data from your apps)")}.`,
     `It does not show: ${listOr(hidden, "nothing else")}.`,
     "Page code written by an AI agent runs in the viewer's browser without network access. A viewer can still copy what is on screen.",
     `${plural(have, "link")} of this page ${have === 1 ? "is" : "are"} active now (at most ${LIMITS.linksPerArtifact}).`,
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
+export interface PublishHoldInput {
+  id: string;
+  version: number;
+  data?: readonly { key: string; digest: string }[] | undefined;
+  expect?: PublishExpect | undefined;
+}
 /** What the owner reads before approving `artifact_publish`: what becomes visible to link holders, and what changes. */
-export function publishHoldText(db: Db, i: { id: string; version: number; data?: readonly { key: string; digest: string }[] | undefined }, now: number): string {
+export function publishHoldText(db: Db, i: PublishHoldInput, now: number): string {
   const a = artifactRow(db, i.id);
   if (!a) return `Change what the people who hold a link to ${i.id} see.`;
   const live = Number(a.live_version);
   const staged = a.staged_version === null ? null : Number(a.staged_version);
   const v = versionRow(db, i.id, i.version);
   const links = activeLinkCount(db, i.id, now);
-  const lines = [`Change what ${links === 0 ? "viewers" : plural(links, "active link")} of the live page "${clip(String(a.title), 80)}" show${links === 1 ? "s" : ""}.`];
+  const e = i.expect;
+  const lines = [`Change what ${links === 0 ? "viewers" : plural(links, "active link")} of the live page ${quote(String(a.title), 80)} show${links === 1 ? "s" : ""}.`];
   if (!v) lines.push(`Version ${i.version} does not exist (it may have been pruned). The call will be refused.`);
-  else if (i.version === live) lines.push(`The live version stays version ${live}.`);
   else {
-    const how = staged === i.version ? "the version that waits for you" : i.version < live ? "an older version (a rollback)" : "a version that is not staged";
-    lines.push(`Version ${i.version} (${how}) becomes live; now version ${live} is live.`);
-    lines.push(`Version ${i.version}: ${kib(Number(v.bytes))}, sha256 ${shortDigest(String(v.html_sha256))}, written by ${String(v.created_by_name)}. Links that follow the live version show it at once; pinned links keep their version.`);
-    if (a.staged_title !== null || a.staged_description !== null) lines.push(`The staged title or description goes live with it${a.staged_title !== null ? `: "${clip(String(a.staged_title), 80)}"` : ""}.`);
+    if (i.version === live) lines.push(`The live version stays version ${live}.`);
+    else if (i.version < live) lines.push(`This rolls the page back from version ${live} to the older version ${i.version}.`);
+    else if (staged === i.version) lines.push(`Version ${i.version} waits for you and becomes live now (version ${live} is live).`);
+    else lines.push(`Version ${i.version} is not the staged version. It becomes live now (version ${live} is live).`);
+    if (i.version !== live) {
+      lines.push(versionLine(i.version, v));
+      lines.push("Links that follow the live version show it at once; pinned links keep their version.");
+      if (staged !== null && staged !== i.version) lines.push(`The staged version ${staged} stays staged and waits for you.`);
+    }
+    if (e && e.htmlSha256 !== String(v.html_sha256)) lines.push(`The agent saw sha256 ${shortDigest(e.htmlSha256)}. That is not version ${i.version} as it is now; the call will be refused (page_changed).`);
+    // title and description: an agent's call moves only what it lists and what is shown here
+    const goesWith = staged === null || staged === i.version;
+    for (const [field, now_, want] of [
+      ["title", a.staged_title, e?.title],
+      ["description", a.staged_description, e?.description],
+    ] as const) {
+      if (now_ === null) {
+        if (want !== undefined) lines.push(`The agent expects a staged ${field}, but none is staged; the call will be refused (page_changed).`);
+        continue;
+      }
+      const text = quote(String(now_), field === "title" ? 80 : 280);
+      if (want === undefined) lines.push(`The staged ${field} ${text} stays staged and waits for you.`);
+      else if (want !== String(now_)) lines.push(`The agent expects another staged ${field} (${quote(want, 280)}); the call will be refused (page_changed).`);
+      else if (!goesWith) lines.push(`The staged ${field} ${text} belongs to version ${staged}; the call will be refused (page_changed).`);
+      else lines.push(`The staged ${field} ${text} goes live with it.`);
+    }
     // sources the version's contract adds, drops or changes against what is live now
     const target = parseStoredContract(String(v.contract_json));
     const current = new Map(db.prepare("SELECT key, digest FROM la_source WHERE artifact_id = ?").all(i.id).map((r) => [String(r.key), String(r.digest)]));

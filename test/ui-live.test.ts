@@ -582,7 +582,7 @@ describe("Page: links", () => {
     const shown = openDialog(m.host);
     assert.match(shown.textContent ?? "", /The link is ready/);
     assert.match(shown.textContent ?? "", /tbv_SECRETSECRET/);
-    assert.match(shown.textContent ?? "", /the app shows it only once and keeps a fingerprint/);
+    assert.match(shown.textContent ?? "", /the app shows it only once\. The list of links keeps a fingerprint.*sealed, so a repeated request gets the same address/);
     assert.ok(field(shown, "Copy"), "a Copy button");
     assert.deepEqual(alerts(m.host), []);
     await click(field(shown, "Done"));

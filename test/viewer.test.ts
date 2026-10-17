@@ -106,6 +106,23 @@ describe("tokens and the uniform 404", () => {
   });
 });
 
+describe("no views origin", () => {
+  it("serves nothing: 503 with the floor and no 'self' fallback in any CSP (quiet: the same request with an origin is 200)", async () => {
+    const id = await page();
+    const tok = link(id);
+    const none: ViewerConfig = { ...CFG, viewOrigin: null };
+    assert.equal(get(`/v/live-artifacts/${tok}`).status, 200);
+    for (const path of [`/v/live-artifacts/${tok}`, `/v/live-artifacts/${tok}/data`, "/v/live-artifacts/_s/x.js", `/v/live-artifacts/_d/${docTicket(none, linkIdOf(tok), 1, now)}`, "/v/live-artifacts/tbv_nope"]) {
+      const r = handleViewer(db, request(path, { "sec-fetch-dest": path.includes("/_d/") ? "iframe" : "document" }), none, now);
+      assert.equal(r.status, 503, path);
+      assert.doesNotMatch(r.headers.get("content-security-policy") ?? "", /frame-(src|ancestors)[^;]*'self'/, path);
+      assert.equal(r.headers.get("x-content-type-options"), "nosniff");
+    }
+    assert.match(shellCsp(none, false), /frame-src 'none'/);
+    assert.match(documentCsp(none), /frame-ancestors 'none'/);
+  });
+});
+
 describe("headers (app floor; the bridge adds its own, LA-1)", () => {
   it("shell: strict CSP, framed by nobody; previews may be framed by the main origin only", async () => {
     const id = await page();

@@ -87,7 +87,7 @@ export function App() {
       ) : nav.page === "settings" ? (
         <SettingsPage />
       ) : nav.page === "backups" ? (
-        <BackupsPage text="Live Artifacts backs up its data every night to its own volume. The export has pages, versions, data sources and the last data. It has no link addresses: only their digests are stored." />
+        <BackupsPage text="Live Artifacts backs up its data every night to its own volume. The export has pages, versions, data sources and the last data. The list of links holds only fingerprints of the link addresses." />
       ) : nav.page === "holds" ? (
         <HoldsPage list={holds} only={nav.hold} empty="No calls wait for your approval." />
       ) : (

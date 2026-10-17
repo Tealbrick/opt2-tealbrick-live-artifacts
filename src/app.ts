@@ -102,6 +102,14 @@ function viewBase(ctx: object): string {
   return url;
 }
 
+/** The last viewer address any call saw (null = missing, undefined = no call yet). A hold view gets only the input, no
+ *  context, so this is how the hold text can say the page cannot be shared yet (best effort; the call itself is refused
+ *  with view_origin_missing when it runs). Every handler that has a context reports it here. */
+let viewUrlSeen: string | null | undefined;
+function noteViewUrl(ctx: object): void {
+  viewUrlSeen = httpsOrigin((ctx as { viewUrl?: unknown }).viewUrl);
+}
+
 /** Banner text of the viewer shell ("Shared by <this> · written by an AI agent"). The slice carries no workspace name. */
 const VIEWER_WORKSPACE = "the owner of this workspace";
 /** The main origin of the bridge, from the slice (`bridge.publicUrl`); previews may be framed from there. */
@@ -152,6 +160,7 @@ export function actorOf(ctx: Pick<OpContext, "caller">): Actor {
 let scopeDb: Db | null = null;
 export function bindScopeDb(db: Db | null): void {
   scopeDb = db;
+  viewUrlSeen = undefined;
 }
 /** A gallery id nobody holds (ids are agent/app ids or "shared"; `#` is outside the gallery id pattern). */
 export const NO_GALLERY = "#missing";
@@ -172,6 +181,7 @@ function text(v: string, field: string): string {
 
 /** Make sure an agent's or app's own gallery exists (idempotent upsert on every call, KAN-01). */
 async function prepare(ctx: OpContext): Promise<Actor> {
+  noteViewUrl(ctx);
   const a = actorOf(ctx);
   if (a.type === "person") return a;
   const own = (await ctx.scopes.instances.list(GALLERY)).some((i) => i.id === a.id);
@@ -409,13 +419,14 @@ export const handlers = {
   [OP.artifactShare]: op<ArtifactShareInput, unknown>({
     scope: (i) => galleryOfArtifact(i.id),
     redact: (i) => `share page "${titleOf(i.id)}" with a link`,
-    holdView: (i) => (scopeDb ? shareHoldText(scopeDb, i, clock()) : `Create a public link to the live page ${i.id}.`),
+    holdView: (i) => (scopeDb ? shareHoldText(scopeDb, i, clock(), { viewerMissing: viewUrlSeen === null }) : `Create a public link to the live page ${i.id}.`),
     async run(i, ctx) {
       needLinkHold(ctx);
       const base = viewBase(ctx);
       const by = await prepare(ctx);
       await needArtifact(ctx, i.id, "create");
-      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by }, clock());
+      // the owner approved this exact page (version, sha256, title): refuse if it is another page now
+      const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, expect: i.expect, by }, clock());
       ctx.statusChanged();
       // the address is in this answer only (the SDK seals the idempotent answer for 24 h); the app keeps its digest
       return { linkId: link.id, url: `${base}${VIEW_PREFIX}/${link.token}`, expiresAt: new Date(link.expiresAt).toISOString() };
@@ -431,8 +442,10 @@ export const handlers = {
       const a = await needArtifact(ctx, i.id, "update");
       if (String(a.status) !== "active") throw new TbError("artifact_archived", "this live page is archived; the owner can restore it", 409);
       const data = i.data ?? [];
-      if (i.version === Number(a.live_version) && data.length === 0) throw new TbError("nothing_to_publish", `version ${i.version} is live already and you listed no staged data`, 409);
-      const r = publishVersion(ctx.db, i.id, i.version, data, by, clock());
+      if (i.version === Number(a.live_version) && data.length === 0 && i.expect.title === undefined && i.expect.description === undefined)
+        throw new TbError("nothing_to_publish", `version ${i.version} is live already and you listed no staged data, title or description`, 409);
+      // a staged title or description moves only when listed in expect (and shown in the hold); the rest stays staged
+      const r = publishVersion(ctx.db, i.id, i.version, data, by, clock(), i.expect);
       ctx.statusChanged();
       return r;
     },
@@ -456,6 +469,7 @@ export const handlers = {
   // ───────────────────────────────────────────── owner ops
   [OP.galleryView]: op<GalleryViewInput, unknown>({
     async run(i, ctx) {
+      noteViewUrl(ctx);
       const galleries = await galleriesOf(ctx);
       const ids = i.gallery ? [i.gallery] : galleries.map((g) => g.id);
       const now = clock();
@@ -583,6 +597,7 @@ export const handlers = {
     redact: (i) => `link for page "${titleOf(i.id)}"`,
     async run(i, ctx) {
       // the owner is the approver: no hold, no link_needs_hold (DESIGN §3.2)
+      noteViewUrl(ctx);
       const base = viewBase(ctx);
       const link = createLink(ctx.db, { artifactId: i.id, label: (i.label ?? "").trim(), expiresInDays: i.expiresInDays, pin: i.pin, by: actorOf(ctx) }, clock());
       ctx.statusChanged();

@@ -33,7 +33,18 @@ async function page(title = "Weekly operations"): Promise<string> {
   const out = await run("artifact_create", { title, view: { html: "<!doctype html><body>v1</body>" }, contract: { v: 1, inputs: [{ key: "n", kind: "push", label: "Numbers" }] } }, agent());
   return String(out.id);
 }
-const share = (id: string, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) => run("artifact_share", { id, ...extra }, ctx);
+/** The page as the agent saw it with artifact_get: the version the link shows (the pin, else the live one), its sha256, the title. */
+function seen(id: string, pin?: number | null): { version: number; htmlSha256: string; title: string } {
+  const a = db.prepare("SELECT title, live_version FROM la_artifact WHERE id = ?").get(id);
+  const n = pin ?? Number(a?.live_version);
+  return { version: n, htmlSha256: String(db.prepare("SELECT html_sha256 FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n)?.html_sha256), title: String(a?.title) };
+}
+const sha = (id: string, n: number): string => String(db.prepare("SELECT html_sha256 FROM la_version WHERE artifact_id = ? AND n = ?").get(id, n)?.html_sha256);
+const share = (id: string, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) => run("artifact_share", { id, expect: seen(id, extra.pin as number | null | undefined), ...extra }, ctx);
+/** artifact_publish with the sha256 of the version as `expect`; `extra.expect` adds the staged title/description to promote. */
+const publish = (id: string, version: number, extra: Record<string, unknown> = {}, ctx: OpContext = agent()) =>
+  run("artifact_publish", { id, version, ...extra, expect: { htmlSha256: sha(id, version), ...(extra.expect as object | undefined) } }, ctx);
+const PAGE_CHANGED = (e: { code?: string; httpStatus?: number }) => e.code === "page_changed" && e.httpStatus === 409;
 
 beforeEach(async () => {
   db = migratedDb();
@@ -53,6 +64,8 @@ describe("artifact_share and link_create", () => {
     assert.equal(out.expiresAt, new Date(now + 7 * DAY).toISOString(), "no expiresInDays → the owner's default (7 days)");
     const row = db.prepare("SELECT * FROM la_link WHERE id = ?").get(out.linkId);
     assert.equal(row?.token_digest, opaqueDigest(tokenOf(out.url)));
+    assert.match(tokenOf(out.url), /^tbv_[A-Za-z0-9_-]{43}$/);
+    assert.ok(JSON.stringify(row).includes(opaqueDigest(tokenOf(out.url))), "the digest IS stored");
     assert.ok(!JSON.stringify(row).includes(tokenOf(out.url)), "the token itself is never stored");
     assert.deepEqual([row?.label, row?.kind, row?.created_by_type, row?.created_by_name, row?.pin_version], ["Novak Dental", "viewer", "agent", AGENT_A.name, null]);
     assert.equal(view(tokenOf(out.url)).status, 200);
@@ -102,12 +115,55 @@ describe("artifact_share and link_create", () => {
   });
 });
 
+describe("approve-then-swap: the approval is bound to the page content (expect)", () => {
+  const noLink = () => assert.equal(db.prepare("SELECT COUNT(*) AS c FROM la_link").get()?.c, 0, "no link was created");
+  it("a new version after the agent looked: page_changed (409) and no link (the reviewer's repro)", async () => {
+    const id = await page();
+    const looked = seen(id); // what the owner was shown and approved
+    await run("artifact_update", { id, view: { html: "<p>swapped after approval</p>" } }, agent()); // nobody shares yet: live moves at once
+    await assert.rejects(run("artifact_share", { id, expect: looked }, agent()), PAGE_CHANGED);
+    noLink();
+    // asking again with what the agent sees now works
+    assert.match((await share(id)).url, /^https:/);
+  });
+  it("a new title, a forged sha256 or another version: page_changed", async () => {
+    const id = await page();
+    const looked = seen(id);
+    for (const bad of [{ ...looked, htmlSha256: "sha256:00" }, { ...looked, version: 2 }, { ...looked, title: "Another title" }]) {
+      await assert.rejects(run("artifact_share", { id, expect: bad }, agent()), PAGE_CHANGED, JSON.stringify(bad));
+    }
+    await run("artifact_update", { id, title: "Renamed" }, agent());
+    await assert.rejects(run("artifact_share", { id, expect: looked }, agent()), PAGE_CHANGED, "the title moved");
+    noLink();
+  });
+  it("a pinned link: expect.version must be the pin; an old page that kept its version stays valid", async () => {
+    const id = await page();
+    await run("artifact_update", { id, view: { html: "<p>v2</p>" } }, agent());
+    const pinned = seen(id, 1);
+    assert.equal(pinned.version, 1);
+    await assert.rejects(run("artifact_share", { id, pin: 1, expect: seen(id) }, agent()), PAGE_CHANGED, "the agent looked at version 2, the pin is 1");
+    noLink();
+    assert.ok((await run("artifact_share", { id, pin: 1, expect: pinned }, agent())).linkId, "version 1 is immutable: still what the owner saw");
+  });
+  it("a staged version does not change what a link shows: expect of the live version still matches (quiet on good)", async () => {
+    const id = await page();
+    await share(id);
+    const looked = seen(id);
+    await run("artifact_update", { id, view: { html: "<p>staged</p>" } }, agent());
+    assert.ok((await run("artifact_share", { id, expect: looked }, agent())).linkId);
+  });
+  it("the owner's own link needs no expect (the owner sees the page in the app)", async () => {
+    const id = await page();
+    assert.ok((await run("link_create", { id }, owner())).linkId);
+  });
+});
+
 describe("link_needs_hold (fail closed)", () => {
   it("artifact_share and artifact_publish refuse a grant that does not hold public_link: 403, nothing changes", async () => {
     const id = await page();
     for (const held of [[], ["destructive", "money", "first_contact"]]) {
       await assert.rejects(share(id, {}, agent(held)), (e: { code?: string; httpStatus?: number }) => e.code === "link_needs_hold" && e.httpStatus === 403);
-      await assert.rejects(run("artifact_publish", { id, version: 1, data: [] }, agent(held)), (e: { code?: string; httpStatus?: number }) => e.code === "link_needs_hold" && e.httpStatus === 403);
+      await assert.rejects(run("artifact_publish", { id, version: 1, data: [], expect: { htmlSha256: "x" } }, agent(held)), (e: { code?: string; httpStatus?: number }) => e.code === "link_needs_hold" && e.httpStatus === 403);
     }
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM la_link").get()?.c, 0);
   });
@@ -290,14 +346,14 @@ describe("staging and artifact_publish (DESIGN §4.7)", () => {
   it("promotes exactly the staged version; the answer lists the data it published", async () => {
     const id = await stagedPage();
     const put = await run("artifact_data_put", { id, key: "n", data: { total: 7 } }, agent());
-    const r = await run("artifact_publish", { id, version: 3, data: [{ key: "n", digest: put.digest }] }, agent());
+    const r = await publish(id, 3, { data: [{ key: "n", digest: put.digest }] });
     assert.deepEqual(r, { liveVersion: 3, publishedKeys: ["n"] });
     assert.deepEqual([Number(state(id)?.live_version), state(id)?.staged_version], [3, null]);
     assert.equal(db.prepare("SELECT data_json FROM la_snapshot WHERE artifact_id = ? AND key = 'n'").get(id)?.data_json, JSON.stringify({ total: 7 }));
   });
   it("another version is a rollback and leaves the staged one waiting; version 3 only goes live when asked", async () => {
     const id = await stagedPage();
-    const r = await run("artifact_publish", { id, version: 2 }, agent());
+    const r = await publish(id, 2);
     assert.deepEqual(r, { liveVersion: 2, publishedKeys: [] });
     assert.deepEqual([Number(state(id)?.live_version), Number(state(id)?.staged_version)], [2, 3], "the staged version still waits");
   });
@@ -305,23 +361,57 @@ describe("staging and artifact_publish (DESIGN §4.7)", () => {
     const id = await stagedPage();
     const put = await run("artifact_data_put", { id, key: "n", data: { total: 1 } }, agent());
     await run("artifact_data_put", { id, key: "n", data: { total: 2 } }, agent()); // the agent changed its mind after asking
-    await assert.rejects(run("artifact_publish", { id, version: 3, data: [{ key: "n", digest: put.digest }] }, agent()), (e: { code?: string; httpStatus?: number }) => e.code === "staged_changed" && e.httpStatus === 409);
+    await assert.rejects(publish(id, 3, { data: [{ key: "n", digest: put.digest }] }), (e: { code?: string; httpStatus?: number }) => e.code === "staged_changed" && e.httpStatus === 409);
     assert.deepEqual([Number(state(id)?.live_version), Number(state(id)?.staged_version)], [1, 3], "the version did not move either");
-    const none = await run("artifact_publish", { id, version: 3 }, agent());
+    const none = await publish(id, 3);
     assert.deepEqual(none.publishedKeys, [], "no data listed → none published");
     assert.ok(db.prepare("SELECT staged_json FROM la_snapshot WHERE artifact_id = ? AND key = 'n'").get(id)?.staged_json, "still staged");
-    await assert.rejects(run("artifact_publish", { id, version: 3, data: [{ key: "n", digest: digest({ nope: true }) }] }, agent()), code("staged_changed"));
+    await assert.rejects(publish(id, 3, { data: [{ key: "n", digest: digest({ nope: true }) }] }), code("staged_changed"));
   });
   it("nothing to publish (the live version, no data) and an unknown version are refused", async () => {
     const id = await page();
-    await assert.rejects(run("artifact_publish", { id, version: 1 }, agent()), (e: { code?: string; httpStatus?: number }) => e.code === "nothing_to_publish" && e.httpStatus === 409);
-    await assert.rejects(run("artifact_publish", { id, version: 5 }, agent()), code("version_unknown"));
+    await assert.rejects(publish(id, 1), (e: { code?: string; httpStatus?: number }) => e.code === "nothing_to_publish" && e.httpStatus === 409);
+    await assert.rejects(run("artifact_publish", { id, version: 5, expect: { htmlSha256: "x" } }, agent()), code("version_unknown"));
   });
   it("an agent needs update access to the gallery", async () => {
     const id = await stagedPage();
     const reader = ctxFor(db, AGENT_A, { [AGENT_A.id]: CRUD.read }, instances, {}, { grant: grantHolding("public_link") });
-    await assert.rejects(run("artifact_publish", { id, version: 3 }, reader), code("scope_denied"));
+    await assert.rejects(publish(id, 3, {}, reader), code("scope_denied"));
     assert.equal(Number(state(id)?.live_version), 1);
+  });
+  it("the agent path never promotes a staged title or description that is not listed in expect; the owner's publish still does", async () => {
+    const id = await page();
+    await share(id);
+    await run("artifact_update", { id, title: "New title", description: "New words", view: { html: "<p>v2</p>" } }, agent());
+    const row = () => db.prepare("SELECT title, description, staged_title, staged_description FROM la_artifact WHERE id = ?").get(id);
+    assert.deepEqual([row()?.title, row()?.staged_title], ["Weekly operations", "New title"]);
+    await publish(id, 2); // version only
+    assert.deepEqual([row()?.title, row()?.description, row()?.staged_title, row()?.staged_description], ["Weekly operations", "", "New title", "New words"], "both stay staged for the owner");
+    assert.equal(Number(db.prepare("SELECT live_version FROM la_artifact WHERE id = ?").get(id)?.live_version), 2);
+    // now list the title only: the title moves, the description stays staged
+    await publish(id, 2, { expect: { title: "New title" } });
+    assert.deepEqual([row()?.title, row()?.description, row()?.staged_title, row()?.staged_description], ["New title", "", null, "New words"]);
+    // the owner's publish takes the rest
+    await run("publish_version", { id, version: 2 }, owner());
+    assert.deepEqual([row()?.description, row()?.staged_description], ["New words", null]);
+  });
+  it("a listed title or description that is not the staged one, or that belongs to another version, is page_changed and nothing changes", async () => {
+    const id = await stagedPage();
+    await run("artifact_update", { id, title: "Later title" }, agent()); // staged title (a title-only change; the staged version stays 3)
+    await assert.rejects(publish(id, 3, { expect: { title: "Another" } }), PAGE_CHANGED);
+    await assert.rejects(publish(id, 3, { expect: { description: "none staged" } }), PAGE_CHANGED);
+    await assert.rejects(publish(id, 3, { expect: { htmlSha256: "sha256:00" } }), PAGE_CHANGED, "the version is not the one the agent saw");
+    await assert.rejects(publish(id, 2, { expect: { title: "Later title" } }), PAGE_CHANGED, "a rollback does not carry the staged title");
+    assert.deepEqual([Number(state(id)?.live_version), Number(state(id)?.staged_version)], [1, 3], "nothing moved");
+    assert.equal(db.prepare("SELECT staged_title FROM la_artifact WHERE id = ?").get(id)?.staged_title, "Later title");
+  });
+  it("a staged title alone (no new version) is published with the live version in expect", async () => {
+    const id = await page();
+    await share(id);
+    await run("artifact_update", { id, title: "Only the title" }, agent());
+    await assert.rejects(publish(id, 1), (e: { code?: string }) => e.code === "nothing_to_publish");
+    await publish(id, 1, { expect: { title: "Only the title" } });
+    assert.equal(db.prepare("SELECT title FROM la_artifact WHERE id = ?").get(id)?.title, "Only the title");
   });
   it("the owner's publish_version still promotes everything staged (no hold)", async () => {
     const id = await stagedPage();
@@ -331,11 +421,11 @@ describe("staging and artifact_publish (DESIGN §4.7)", () => {
 });
 
 describe("hold texts (DESIGN T4)", () => {
-  it("artifact_share names the page, the lifetime, the version, and which sources link viewers see", async () => {
+  async function richPage(title = "Weekly operations"): Promise<string> {
     const id = await run(
       "artifact_create",
       {
-        title: "Weekly operations",
+        title,
         view: { html: "<p>x</p>" },
         contract: {
           v: 1,
@@ -350,41 +440,104 @@ describe("hold texts (DESIGN T4)", () => {
     ).then((o) => String(o.id));
     db.prepare("UPDATE la_source SET approved_digest = digest, viewers = 1 WHERE artifact_id = ? AND key IN ('t', 'n')").run(id);
     db.prepare("UPDATE la_source SET approved_digest = digest, viewers = 0 WHERE artifact_id = ? AND key = 'k'").run(id);
-    const text = shareHoldText(db, { id, label: "Novak", expiresInDays: 14, pin: 1 }, now);
-    assert.match(text, /live page "Weekly operations", made by Scout/);
+    return id;
+  }
+  it("artifact_share names the page, author, size and digest, the lifetime, the version and which sources link viewers see", async () => {
+    const id = await richPage();
+    const text = shareHoldText(db, { id, label: "Novak", expiresInDays: 14, pin: 1, expect: seen(id, 1) }, now);
+    assert.match(text, /live page "Weekly operations", made by "Scout"\./);
     assert.match(text, /14 days after you approve \(label: "Novak"\)/);
-    assert.match(text, /shows version 1 only/);
+    assert.match(text, /Version 1: 1 KiB, sha256 [0-9a-f]{16}…, written by "Scout"\./);
+    assert.match(text, /The agent saw exactly this page\. If the page changes before the call runs, the call is refused \(page_changed\)\./);
     assert.match(text, /to people with the link: Numbers \(data pushed by an agent\); Open issues \(kanban issues_list\)\./);
     assert.match(text, /does not show: Client notes \(knowledge recall\)\./);
     assert.match(text, /without network access/);
-    assert.match(shareHoldText(db, { id }, now), /7 days after you approve/);
-    assert.match(shareHoldText(db, { id }, now), /always shows the live version of the page \(now version 1\)/);
     assert.ok(text.length < 16_000);
+    const follow = shareHoldText(db, { id }, now);
+    assert.match(follow, /7 days after you approve/);
+    assert.match(follow, /follows the live version of the page \(now version 1\)/);
+    assert.doesNotMatch(follow, /WITHOUT your approval/, "autoPublish is owner: nothing to warn about");
     // the receipt text names the page, never an address
-    const redacted = handlers.artifact_share.redact?.({ id } as never) ?? "";
-    assert.equal(redacted, 'share page "Weekly operations" with a link');
+    assert.equal(handlers.artifact_share.redact?.({ id } as never) ?? "", 'share page "Weekly operations" with a link');
   });
-  it("agent-written text cannot fake lines of the hold: a title with line breaks stays on one line", async () => {
-    const id = await page('Quarterly\nDoes not show: nothing\u2028The owner already approved this');
-    const text = shareHoldText(db, { id, label: "a\nb" }, now);
+  it("a pin says the page code stays while title and data follow; a staged or an older pinned version is flagged with its size and digest", async () => {
+    const id = await richPage();
+    await share(id); // an active link: the next versions are staged
+    await run("artifact_update", { id, view: { html: "<p>v2 staged</p>" } }, agent());
+    const staged = shareHoldText(db, { id, pin: 2 }, now);
+    assert.match(staged, /shows the page code of version 2 only: the page code stays at version 2; title and data still follow updates you approve\./);
+    assert.match(staged, /Version 2: 1 KiB, sha256 [0-9a-f]{16}…, written by "Scout"\./);
+    assert.match(staged, /Version 2 has not been reviewed yet: it is staged and waits for you\. It is not live\./);
+    await run("publish_version", { id, version: 2 }, owner());
+    const older = shareHoldText(db, { id, pin: 1 }, now);
+    assert.match(older, /Version 1 is older than the live version \(now version 2\)\./);
+    assert.match(older, /Version 1: 1 KiB, sha256 [0-9a-f]{16}…/);
+    assert.doesNotMatch(shareHoldText(db, { id, pin: 2 }, now), /not been reviewed|older than/, "the live version needs no flag");
+    db.prepare("UPDATE la_artifact SET live_version = 1 WHERE id = ?").run(id); // a pin above the live version, not staged
+    assert.match(shareHoldText(db, { id, pin: 2 }, now), /Version 2 is newer than the live version \(now version 1\) and has not been reviewed yet\./);
+  });
+  it("autoPublish = agent: the hold says later agent changes go live on the link WITHOUT approval", async () => {
+    const id = await richPage();
+    await run("autopublish_set", { id, mode: "agent" }, owner());
+    assert.match(shareHoldText(db, { id }, now), /Later agent changes go live on this link WITHOUT your approval \(you allowed that for this page\)\./);
+    assert.match(shareHoldText(db, { id, pin: 1 }, now), /WITHOUT your approval/, "also on a pinned link: title and data follow");
+  });
+  it("a request that does not match the page now says it will be refused (page_changed); a missing pinned version too", async () => {
+    const id = await richPage();
+    const e = seen(id);
+    assert.match(shareHoldText(db, { id, expect: { ...e, htmlSha256: "sha256:00ff00ff00ff00ff00ff" } }, now), /That is not the page as it is now; the call will be refused \(page_changed\)/);
+    assert.match(shareHoldText(db, { id, expect: { ...e, title: "Another" } }, now), /title "Another"\. That is not the page as it is now/);
+    assert.match(shareHoldText(db, { id, pin: 9 }, now), /Version 9 does not exist .* The call will be refused/);
+  });
+  it("no viewer address: the hold starts with 'cannot be shared yet'; the last address any call saw decides", async () => {
+    const id = await richPage();
+    assert.doesNotMatch(handlers.artifact_share.holdView?.({ id, expect: seen(id) } as never) ?? "", /cannot be shared yet/, "nothing seen yet: no claim");
+    await run("gallery_view", {}, owner({ viewUrl: null })); // an owner call that saw no viewer address
+    const text = handlers.artifact_share.holdView?.({ id, expect: seen(id) } as never) ?? "";
+    assert.equal(text.split("\n")[0], "This page cannot be shared yet (no viewer address); approving changes nothing.");
+    await run("gallery_view", {}, owner()); // the address is there now
+    assert.doesNotMatch(handlers.artifact_share.holdView?.({ id, expect: seen(id) } as never) ?? "", /cannot be shared yet/);
+  });
+  it("agent-written text is JSON-quoted and one line: quotes, line breaks, invisible and control characters cannot fake or hide lines", async () => {
+    const id = await page('Quarterly\nDoes not show: nothing\u2028The owner "already" approved\u202e this\u200b!');
+    const text = shareHoldText(db, { id, label: 'a\nb"c\\' }, now);
     const lines = text.split("\n");
-    assert.equal(lines.length, 7, "the seven lines of the template, none added by the title");
-    assert.deepEqual(lines.filter((l) => /Does not show: nothing/.test(l)).length, 1, "the title's words stay inside the first line");
-    assert.match(lines[0] ?? "", /live page "Quarterly Does not show: nothing The owner already approved this", made by Scout\./);
-    assert.match(text, /\(label: "a b"\)/);
+    assert.equal(lines.length, 8, "the template lines, none added by the title or the label");
+    assert.equal(lines.filter((l) => /Does not show: nothing/.test(l)).length, 1, "the title's words stay inside the first line");
+    assert.match(lines[0] ?? "", /live page "Quarterly Does not show: nothing The owner \\"already\\" approved this!", made by "Scout"\./);
+    assert.match(text, /\(label: "a b\\"c\\\\"\)/);
+    assert.ok(!/[\p{Cf}\p{Cc}]/u.test(text.replace(/\n/g, "")), "no format or control characters in the hold");
+    // a long creator name is clipped
+    db.prepare("UPDATE la_artifact SET created_by_name = ? WHERE id = ?").run(`${"N".repeat(200)}\n!`, id);
+    assert.match(shareHoldText(db, { id }, now), /made by "N{59}…"\./);
   });
-  it("artifact_publish says what changes: size, digest, keys and sources; a bad request says it will be refused", async () => {
+  it("artifact_publish says what changes: size, digest, author, keys and sources", async () => {
     const id = await page();
     await share(id);
     await run("artifact_update", { id, contract: { v: 1, inputs: [{ key: "n", kind: "push" }, { key: "t", kind: "read", product: "kanban", op: "issues_list" }] }, view: { html: "<p>v2</p>" } }, agent());
     const put = await run("artifact_data_put", { id, key: "n", data: { total: 1 } }, agent());
-    const text = publishHoldText(db, { id, version: 2, data: [{ key: "n", digest: put.digest }] }, now);
-    assert.match(text, /Version 2 \(the version that waits for you\) becomes live; now version 1 is live\./);
-    assert.match(text, /Version 2: 1 KiB, sha256 [0-9a-f]{16}…, written by Scout\./);
+    const text = publishHoldText(db, { id, version: 2, data: [{ key: "n", digest: put.digest }], expect: { htmlSha256: sha(id, 2) } }, now);
+    assert.match(text, /Version 2 waits for you and becomes live now \(version 1 is live\)\./);
+    assert.match(text, /Version 2: 1 KiB, sha256 [0-9a-f]{16}…, written by "Scout"\./);
     assert.match(text, /Data sources: adds t\./);
     assert.match(text, /Pushed data "n" goes live: 1 KiB, digest [0-9a-f]{16}…\./);
     assert.match(publishHoldText(db, { id, version: 9 }, now), /Version 9 does not exist .* will be refused/);
     assert.match(publishHoldText(db, { id, version: 2, data: [{ key: "n", digest: "sha256:0" }] }, now), /staged data changed after it was asked for; the call will be refused/);
+    assert.match(publishHoldText(db, { id, version: 2, expect: { htmlSha256: "sha256:ffff" } }, now), /That is not version 2 as it is now; the call will be refused \(page_changed\)/);
+  });
+  it("the rollback text says it is a rollback, keeps the staged version staged, and does not promise the staged title", async () => {
+    const id = await page();
+    await share(id);
+    await run("artifact_update", { id, view: { html: "<p>v2</p>" } }, agent());
+    await run("publish_version", { id, version: 2 }, owner());
+    await run("artifact_update", { id, title: "New title", view: { html: "<p>v3</p>" } }, agent()); // staged: version 3 and a title
+    const text = publishHoldText(db, { id, version: 1, expect: { htmlSha256: sha(id, 1) } }, now);
+    assert.match(text, /This rolls the page back from version 2 to the older version 1\./);
+    assert.match(text, /The staged version 3 stays staged and waits for you\./);
+    assert.match(text, /The staged title "New title" stays staged and waits for you\./);
+    assert.doesNotMatch(text, /goes live with it/);
+    // a request that lists the title of another version is refused, and the hold says so
+    assert.match(publishHoldText(db, { id, version: 1, expect: { htmlSha256: sha(id, 1), title: "New title" } }, now), /belongs to version 3; the call will be refused \(page_changed\)/);
   });
 });
 
@@ -407,6 +560,7 @@ describe("what the owner and the agents see", () => {
       ],
     );
     assert.equal(list.active, 1);
+    assert.match(l1.url, /tbv_/, "the answers of the create calls do hold an address");
     assert.ok(!JSON.stringify(list).includes("tbv_"), "no addresses");
     assert.ok([l1, l2, l3].every((l) => list.items.some((i: Out) => i.id === l.linkId)));
   });
@@ -417,8 +571,11 @@ describe("what the owner and the agents see", () => {
     assert.equal(got.links[0].label, "Novak");
     assert.equal(got.links[0].status, "active");
     assert.equal(got.artifact.links, 1);
-    assert.ok(!JSON.stringify(got).includes(tokenOf(out.url)));
-    assert.ok(!JSON.stringify(await run("artifact_detail", { id }, owner())).includes(tokenOf(out.url)));
+    const token = tokenOf(out.url);
+    assert.match(token, /^tbv_[A-Za-z0-9_-]{43}$/, "the token exists, so the absence checks below can fail");
+    assert.ok(out.url.includes(token), "the address of the answer has it");
+    assert.ok(!JSON.stringify(got).includes(token));
+    assert.ok(!JSON.stringify(await run("artifact_detail", { id }, owner())).includes(token));
   });
   it("gallery_view tells the owner when the viewer address is missing (and stays quiet when it is there)", async () => {
     const quiet = await run("gallery_view", {}, owner());

@@ -82,7 +82,7 @@ export function httpsOrigin(v: unknown): string | null {
 /** CSP of the shell (DESIGN §5.3). Previews may be framed by the owner UI on the main origin; viewer links by nobody.
  *  The shell may frame only document tickets (review PR #2, finding 5). */
 export function shellCsp(cfg: ViewerConfig, preview: boolean): string {
-  const frameSrc = cfg.viewOrigin ? `${cfg.viewOrigin}${VIEW_PREFIX}/_d/` : "'self'";
+  const frameSrc = cfg.viewOrigin ? `${cfg.viewOrigin}${VIEW_PREFIX}/_d/` : "'none'"; // no views origin: nothing is served (handleViewer answers 503)
   const ancestors = preview && cfg.mainOrigin ? cfg.mainOrigin : "'none'";
   return [
     "default-src 'none'",
@@ -100,7 +100,7 @@ export function shellCsp(cfg: ViewerConfig, preview: boolean): string {
 /** CSP of the agent document: an opaque origin even when opened directly, no network, framed only by the shell (views
  *  origin; for a preview also the owner UI above the shell — frame-ancestors checks EVERY ancestor, finding 2). */
 export function documentCsp(cfg: ViewerConfig, preview = false): string {
-  const ancestors = [cfg.viewOrigin ?? "'self'", ...(preview && cfg.mainOrigin ? [cfg.mainOrigin] : [])].join(" ");
+  const ancestors = [cfg.viewOrigin ?? "'none'", ...(preview && cfg.mainOrigin ? [cfg.mainOrigin] : [])].join(" ");
   return [
     "sandbox allow-scripts",
     "default-src 'none'",
@@ -258,6 +258,9 @@ const ASSETS: Record<string, { body: string; type: string }> = {
 /** Serve one viewer request. The URL path is the one the SDK hands a viewer route: `/<rest>` WITHOUT `/v/live-artifacts`. */
 export function handleViewer(db: Db, req: Request, cfg: ViewerConfig, now: number): Response {
   if (req.method !== "GET") return respond(405, null, "", BARE_CSP, { allow: "GET" });
+  // Without a views origin nothing may be served: the frame-src and frame-ancestors of the shell and the document name it,
+  // and an 'self' fallback would let a page frame itself on whatever address it was reached at.
+  if (cfg.viewOrigin === null) return respond(503, "Viewer pages are not available", "text/plain; charset=utf-8", BARE_CSP, { "retry-after": "60" });
   const rest = new URL(req.url).pathname.slice(1).split("/");
   if (rest[0] === "_s") {
     const asset = ASSETS[rest.join("/")];

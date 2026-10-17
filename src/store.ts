@@ -535,13 +535,41 @@ export function putData(db: Db, id: string, key: string, data: Json, by: Actor, 
  *  agent saw (an agent publish: what the owner approved is what goes live). */
 export type PublishData = boolean | readonly { key: string; digest: string }[];
 
-/** Make a version live (promote the staged one or roll back) and publish staged pushed data (see PublishData). */
-export function publishVersion(db: Db, id: string, n: number, data: PublishData, by: Actor, now: number): { liveVersion: number; publishedKeys: string[] } {
+/** What an agent publish is bound to (the owner approved exactly this): the version's sha256, and the staged title and/or
+ *  description to promote with it. A staged title or description that is not listed here stays staged. */
+export interface PublishExpect {
+  htmlSha256: string;
+  title?: string | undefined;
+  description?: string | undefined;
+}
+export const pageChanged = (what: string): TbError => new TbError("page_changed", `${what} changed after you asked; read the page again and ask again`, 409);
+
+/** Make a version live (promote the staged one or roll back) and publish staged pushed data (see PublishData). The
+ *  owner's call (no `expect`) also promotes the staged title and description; an agent's call promotes only what its
+ *  `expect` lists and the owner saw, and refuses with page_changed when anything differs (all checks before any change). */
+export function publishVersion(db: Db, id: string, n: number, data: PublishData, by: Actor, now: number, expect?: PublishExpect): { liveVersion: number; publishedKeys: string[] } {
   return db.transaction(() => {
     const a = artifactRow(db, id);
     if (!a) throw notFound();
     const v = versionRow(db, id, n);
     if (!v) throw new TbError("version_unknown", `version ${n} does not exist (it may have been pruned)`, 404);
+    const stagedN0 = a.staged_version === null ? null : Number(a.staged_version);
+    const goesWithVersion = stagedN0 === null || stagedN0 === n;
+    let promoteTitle = expect === undefined;
+    let promoteDescription = expect === undefined;
+    if (expect) {
+      if (String(v.html_sha256) !== expect.htmlSha256) throw pageChanged(`version ${n}`);
+      for (const [field, want, staged] of [
+        ["title", expect.title, a.staged_title],
+        ["description", expect.description, a.staged_description],
+      ] as const) {
+        if (want === undefined) continue;
+        if (staged === null || String(staged) !== want) throw pageChanged(`the staged ${field}`);
+        if (!goesWithVersion) throw new TbError("page_changed", `the staged ${field} goes live only with its own version; it is not part of this change`, 409);
+      }
+      promoteTitle = expect.title !== undefined;
+      promoteDescription = expect.description !== undefined;
+    }
     // listed data must still be what the agent asked for: checked BEFORE any change
     const chosen: string[] = [];
     if (typeof data !== "boolean") {
@@ -552,14 +580,11 @@ export function publishVersion(db: Db, id: string, n: number, data: PublishData,
         chosen.push(d.key);
       }
     }
-    const stagedN = a.staged_version === null ? null : Number(a.staged_version);
+    const stagedN = stagedN0;
     const keepStaged = stagedN !== null && stagedN !== n && stagedN > n;
-    const publishesPending = stagedN === null || stagedN === n;
     db.prepare("UPDATE la_artifact SET live_version = ?, staged_version = ?, updated_at = ? WHERE id = ?").run(n, keepStaged ? stagedN : null, now, id);
-    if (publishesPending)
-      db.prepare(
-        "UPDATE la_artifact SET title = COALESCE(staged_title, title), description = COALESCE(staged_description, description), staged_title = NULL, staged_description = NULL WHERE id = ?",
-      ).run(id);
+    if (goesWithVersion && promoteTitle) db.prepare("UPDATE la_artifact SET title = COALESCE(staged_title, title), staged_title = NULL WHERE id = ?").run(id);
+    if (goesWithVersion && promoteDescription) db.prepare("UPDATE la_artifact SET description = COALESCE(staged_description, description), staged_description = NULL WHERE id = ?").run(id);
     // the live version's contract decides sources and schedule (unchanged bindings keep their approval)
     applyContract(db, id, parseStoredContract(String(v.contract_json)), a, now);
     const keys: string[] = [];

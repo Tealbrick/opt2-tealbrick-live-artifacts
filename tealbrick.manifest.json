@@ -1900,12 +1900,13 @@
       "scopeType": "gallery",
       "id": "artifact_share",
       "title": "Share a live page with a link",
-      "description": "Ask for a viewer link to a live page: anyone who has the link can open the page without an account until it ends or the owner revokes it. The owner approves the link first (hold family public_link). The link address is in the answer of the approved retry only; repeat the same call with the same idempotency key after approval. At most 5 active links per page and 50 per workspace. Answers link_needs_hold (403) while your card does not hold public_link, and view_origin_missing (409) while the bridge has no viewer address.",
+      "description": "Ask for a viewer link to a live page: anyone who has the link can open the page without an account until it ends or the owner revokes it. Read the page first with artifact_get and pass what you saw in expect (version, htmlSha256, title): the owner approves that page, and the call is refused with page_changed (409) if the page changed before it runs. The owner approves the link first (hold family public_link). The link address is in the answer of the approved retry only; repeat the same call with the same idempotency key after approval (the SDK keeps that answer sealed for 24 hours). At most 5 active links per page and 50 per workspace. Answers link_needs_hold (403) while your card does not hold public_link, and view_origin_missing (409) while the bridge has no viewer address.",
       "input": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "id"
+          "id",
+          "expect"
         ],
         "properties": {
           "id": {
@@ -1938,6 +1939,33 @@
               }
             ],
             "description": "A version number to show on this link for its whole life, or null (default) to follow the live version."
+          },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "version",
+              "htmlSha256",
+              "title"
+            ],
+            "description": "The page as you saw it with artifact_get: the version the link will show (the pinned one, else the live one), that version's sha256, and the page title. The owner approves exactly this page; if it changed before the call runs, the call is refused with page_changed.",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
           }
         }
       },
@@ -1981,13 +2009,14 @@
       "scopeType": "gallery",
       "id": "artifact_publish",
       "title": "Make a version of a shared page live",
-      "description": "Make a version live for the people who hold a link: promote the staged version (and the staged pushed data you list), or roll back to an older version. The owner approves it first (hold family public_link) and sees the size, digest, data keys and sources that change. List each staged key with the digest artifact_data_put gave you in data; staged data you do not list stays staged. Answers link_needs_hold (403) while your card does not hold public_link, staged_changed (409) if listed data changed after you asked.",
+      "description": "Make a version live for the people who hold a link: promote the staged version (and the staged pushed data you list), or roll back to an older version. The owner approves it first (hold family public_link) and sees the size, digest, data keys, title and sources that change. Pass expect.htmlSha256 (from artifact_get) and, to promote a staged title or description with the version, the same text in expect.title / expect.description; otherwise they stay staged. List each staged key with the digest artifact_data_put gave you in data; staged data you do not list stays staged. Answers link_needs_hold (403) while your card does not hold public_link, page_changed or staged_changed (409) if what you listed changed after you asked.",
       "input": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "id",
-          "version"
+          "version",
+          "expect"
         ],
         "properties": {
           "id": {
@@ -2025,6 +2054,31 @@
                   "minLength": 1,
                   "maxLength": 80
                 }
+              }
+            }
+          },
+          "expect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "htmlSha256"
+            ],
+            "description": "What the owner approves: the sha256 of the version (from artifact_get), and the staged title and/or description to promote with it. A staged title or description that you do not list here stays staged for the owner. Refused with page_changed (409) if any of it differs when the call runs.",
+            "properties": {
+              "htmlSha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 280
               }
             }
           }
@@ -3522,7 +3576,7 @@
       "audience": "person",
       "id": "link_create",
       "title": "Create a viewer link",
-      "description": "The owner creates a viewer link for a page (no hold: the owner is the approver). The address is in the answer; the app stores only its digest. At most 5 active links per page and 50 per workspace. Answers view_origin_missing (409) while the bridge has no viewer address.",
+      "description": "The owner creates a viewer link for a page (no hold: the owner is the approver). The address is in the answer, shown once; the link table keeps only its digest, and the SDK keeps the answer sealed for 24 hours so a repeated request gets the same address. At most 5 active links per page and 50 per workspace. Answers view_origin_missing (409) while the bridge has no viewer address.",
       "input": {
         "type": "object",
         "additionalProperties": false,

@@ -77,7 +77,7 @@ export function CreatedLink({ url, expiresAt }: { url: string; expiresAt: string
     <div className="tb-stack" role="status">
       <h3>The link is ready</h3>
       <CopyBlock text={url} label="Link address" />
-      <p className="tb-soft">Copy it now: the app shows it only once and keeps a fingerprint, not the address. It works until {dateOf(expiresAt)}. You can revoke it at any time.</p>
+      <p className="tb-soft">Copy it now: the app shows it only once. The list of links keeps a fingerprint, not the address. For 24 hours the app also keeps the answer to this request sealed, so a repeated request gets the same address. The link works until {dateOf(expiresAt)}. You can revoke it at any time.</p>
     </div>
   );
 }

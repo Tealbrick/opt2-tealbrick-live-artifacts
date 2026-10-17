@@ -74,16 +74,22 @@ data that agents pushed.
 A link lets people without an account open a page. Anyone who has its address can open it until it ends or the
 owner revokes it, so the owner always approves a new link first.
 
-1. Call `live-artifacts__artifact_share` with `{id, label?, expiresInDays?, pin?}` and an idempotency key.
+1. Read the page with `live-artifacts__artifact_get`. Then call `live-artifacts__artifact_share` with
+   `{id, expect, label?, expiresInDays?, pin?}` and an idempotency key. `expect` is the page as you saw it:
+   `{version, htmlSha256, title}`, where `version` is the version the link will show (your `pin`, else the live version),
+   `htmlSha256` is that version's `sha256` and `title` is the page title. The owner approves exactly that page. If the page
+   changed before the call runs (for example you made a new version), the call is refused with `page_changed` (409): read
+   the page again and ask again.
    `label` (at most 40 characters) says who the link is for. `expiresInDays` is 1 to 90 (default: the owner's
-   setting, 7 days at first). `pin` is a version number to show on that link for good; leave it out to follow the
-   live version.
+   setting, 7 days at first). `pin` is a version number whose page code stays on that link; leave it out to follow the
+   live version. The title and the data of a pinned link still follow the updates the owner approves.
 2. The answer is `held` with a `holdId`. The owner sees the page, how long the link lasts, which version it shows and
    which data it shows, and decides in Holds. Tell the owner a link waits for them. Poll `live-artifacts__tb_hold_status`.
 3. When the hold is approved, repeat **the same call with the same idempotency key**. The answer of that retry holds
-   `url`, the link address. This is the only time you see it: the app keeps a fingerprint, not the address, and
-   `artifact_get` never lists it. The same call with the same key gives the same answer again for 24 hours. A
-   different key or different input is a new request and needs a new approval.
+   `url`, the link address. This is the only time you see it: the list of links keeps a fingerprint, not the address,
+   and `artifact_get` never lists it. The SDK keeps the answer of the approved call, sealed, for 24 hours, so the same call
+   with the same key gives the same address again in that time. A different key or different input is a new request and
+   needs a new approval.
 4. Give the address only to the owner, or to the person the owner named. Do not post it where others read it.
 
 Answers to expect:
@@ -97,8 +103,11 @@ Answers to expect:
   `artifact_get` with `include: ["links"]` for the links of a page (label, end, pin, views).
 
 While a page has an active link, your new versions and new data wait for the owner (`staged: true`). To ask for them
-to go live, call `live-artifacts__artifact_publish` with `{id, version, data?}`. It is held like a link and the owner
-sees the size, digest, data keys and sources that change. List each staged data key with the `digest` that
+to go live, call `live-artifacts__artifact_publish` with `{id, version, expect, data?}`. `expect.htmlSha256` is the
+`sha256` of that version (from `artifact_get`). A staged title or description goes live with the version only if you also
+list it in `expect.title` or `expect.description`; otherwise it stays staged for the owner. The call is held like a link and
+the owner sees the size, digest, title, data keys and sources that change. If any of it differs when the call runs, you get
+`page_changed` (409). List each staged data key with the `digest` that
 `artifact_data_put` gave you, for example `data: [{"key": "numbers", "digest": "sha256:…"}]`; staged data you do not list
 stays staged. If you pushed new data after you asked, you get `staged_changed` (409): ask again. An older `version` rolls
 the page back. `nothing_to_publish` (409) means that version is live already.
