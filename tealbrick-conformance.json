@@ -1,0 +1,18 @@
+{
+  "setup": [
+    {
+      "id": "page_a",
+      "as": "agentA",
+      "op": "artifact_create",
+      "input": { "title": "Conformance page", "view": { "html": "<!doctype html><h1>Conformance</h1>" }, "contract": { "v": 1, "inputs": [{ "key": "n", "kind": "push" }] } },
+      "capture": { "pageA": "/id" }
+    }
+  ],
+  "inputs": {
+    "artifact_create": { "title": "Conformance page", "view": { "html": "<!doctype html><h1>Conformance</h1>" } },
+    "artifact_get": { "id": "${pageA}" },
+    "artifact_update": { "id": "${pageA}", "title": "Conformance page (renamed)" },
+    "artifact_delete": { "id": "${pageA}" },
+    "artifact_data_put": { "id": "${pageA}", "key": "n", "data": { "total": 1 } }
+  }
+}

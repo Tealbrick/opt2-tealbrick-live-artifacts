@@ -3,112 +3,3124 @@
   "schema": "tealbrick.miniapp/2",
   "id": "live-artifacts",
   "name": "Live Artifacts",
-  "summary": "Live Artifacts keeps short items in collections that your agents can list and add to.",
+  "summary": "Pages your agents make from their work: kept, refreshed from the data you approve, and shared with a link you control.",
+  "description": "Live Artifacts keeps a good agent answer as a page you can open again, not a chat message. An agent writes one small HTML page against a fixed contract and proposes its data sources; you approve each source once, with the exact read on screen. The page then refreshes on a schedule from the apps you approved (for example Task Board and Knowledge), even after the agent is gone. Every change is a new version you can roll back. Pages run in a sandbox with no network. Values read from your apps are shown to you, never returned to agents.",
   "version": "0.1.0",
   "sdkMajor": 1,
-  "publisher": { "name": "Live Artifacts authors" },
-  "source": { "repo": "https://github.com/Tealbrick/opt2-tealbrick-live-artifacts", "license": "Apache-2.0" },
-  "icon": { "svgPath": "M4 5h16v14H4z M8 9h8 M8 13h8 M8 17h5", "viewBox": "0 0 24 24" },
+  "publisher": {
+    "name": "Tealbrick"
+  },
+  "source": {
+    "repo": "https://github.com/Tealbrick/opt2-tealbrick-live-artifacts",
+    "license": "Apache-2.0"
+  },
+  "icon": {
+    "svgPath": "M4 4h16v16H4z M7 15l3-4 3 3 4-6 M7 8h3",
+    "viewBox": "0 0 24 24"
+  },
   "discovery": {
     "category": "productivity",
-    "intents": ["keep a list of items", "add an item to my collection", "list my items"],
-    "keywords": ["items", "list", "collection"]
+    "intents": [
+      "turn an agent answer into a page",
+      "keep a dashboard my agents made",
+      "a live page that refreshes from my tasks",
+      "share a report page with a link",
+      "at a glance view of my company",
+      "publish agent output as a page"
+    ],
+    "keywords": [
+      "artifacts",
+      "dashboard",
+      "page",
+      "report",
+      "live",
+      "refresh",
+      "share",
+      "snapshot"
+    ]
   },
   "runtime": {
-    "build": { "context": ".", "dockerfile": "Dockerfile" },
+    "build": {
+      "context": ".",
+      "dockerfile": "Dockerfile"
+    },
     "port": 8080,
     "healthPath": "/tb/v1/health",
-    "resources": { "cpu": 0.25, "memoryMb": 256 },
+    "resources": {
+      "cpu": 0.25,
+      "memoryMb": 256
+    },
     "volumes": [
-      { "id": "data", "mountPath": "/data", "sizeGb": 1, "purpose": "data" },
-      { "id": "backup", "mountPath": "/backup", "sizeGb": 2, "purpose": "backup" }
+      {
+        "id": "data",
+        "mountPath": "/data",
+        "sizeGb": 2,
+        "purpose": "data"
+      },
+      {
+        "id": "backup",
+        "mountPath": "/backup",
+        "sizeGb": 4,
+        "purpose": "backup"
+      }
     ]
   },
   "operations": [
     {
-      "id": "items_list",
-      "title": "List items",
-      "description": "List the newest items in one collection, or in every collection the caller may read.",
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "galleries_list",
+      "title": "List galleries",
+      "description": "List the galleries you can read, with your access level (read, contribute, manage) and how many pages each holds.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "galleries"
+        ],
+        "properties": {
+          "galleries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label",
+                "access",
+                "shared",
+                "artifactCount"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "access": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "shared": {
+                  "type": "boolean"
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_list",
+      "title": "List live pages",
+      "description": "List the live pages (artifacts) in the galleries you can read: title, status, live version, refresh state and who made it. Never returns page data.",
       "input": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ]
+          },
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
         }
       },
       "output": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["items"],
+        "required": [
+          "items",
+          "nextCursor"
+        ],
         "properties": {
           "items": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["id", "collection", "title", "createdAt"],
+              "required": [
+                "id",
+                "title",
+                "description",
+                "gallery",
+                "status",
+                "liveVersion",
+                "stagedVersion",
+                "links",
+                "sourcesPending",
+                "refresh",
+                "updatedAt",
+                "createdBy"
+              ],
               "properties": {
-                "id": { "type": "string" },
-                "collection": { "type": "string" },
-                "title": { "type": "string" },
-                "createdAt": { "type": "string" }
+                "id": {
+                  "type": "string",
+                  "minLength": 30,
+                  "maxLength": 30,
+                  "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 280
+                },
+                "gallery": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "archived"
+                  ]
+                },
+                "liveVersion": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                "stagedVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "links": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                },
+                "sourcesPending": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8
+                },
+                "refresh": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "everySeconds",
+                    "lastAt",
+                    "nextAt",
+                    "state"
+                  ],
+                  "properties": {
+                    "everySeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 300,
+                          "maximum": 86400
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lastAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "nextAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "waiting_approval",
+                        "on",
+                        "paused",
+                        "paused_error"
+                      ]
+                    }
+                  }
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                }
               }
             }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
-      "crud": ["read"],
+      "crud": [
+        "read"
+      ],
       "effect": "read",
-      "scopeType": "collection",
       "idempotency": "none",
-      "receipt": false,
-      "audience": "agent"
+      "receipt": false
     },
     {
-      "id": "item_create",
-      "title": "Create item",
-      "description": "Add an item to a collection the caller may write to (default: the caller's own collection).",
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_get",
+      "title": "Get a live page",
+      "description": "Get one live page: its details and one version (default: the live one) with its HTML and contract. include adds versions, sources (binding and approval state), links (never tokens), shape (keys, types and row counts of approved data, never values) and data (only data that agents pushed with artifact_data_put).",
       "input": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title"],
+        "required": [
+          "id"
+        ],
         "properties": {
-          "collection": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "include": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "versions",
+                "sources",
+                "links",
+                "shape",
+                "data"
+              ]
+            }
+          }
         }
       },
       "output": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "collection"],
+        "required": [
+          "artifact",
+          "version"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "collection": { "type": "string" }
+          "artifact": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "title",
+              "description",
+              "gallery",
+              "status",
+              "liveVersion",
+              "stagedVersion",
+              "links",
+              "sourcesPending",
+              "refresh",
+              "updatedAt",
+              "createdBy",
+              "autoPublish",
+              "origin",
+              "forkedFrom"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 30,
+                "maxLength": 30,
+                "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 280
+              },
+              "gallery": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              "liveVersion": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "stagedVersion": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "links": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "sourcesPending": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "refresh": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "everySeconds",
+                  "lastAt",
+                  "nextAt",
+                  "state"
+                ],
+                "properties": {
+                  "everySeconds": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 300,
+                        "maximum": 86400
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lastAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "nextAt": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "waiting_approval",
+                      "on",
+                      "paused",
+                      "paused_error"
+                    ]
+                  }
+                }
+              },
+              "updatedAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "createdBy": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "id",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "agent",
+                      "app",
+                      "person"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 120
+                  }
+                }
+              },
+              "autoPublish": {
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "agent"
+                ]
+              },
+              "origin": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "ref"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "ref": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 0,
+                        "maxLength": 200
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "forkedFrom": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 30,
+                    "maxLength": 30,
+                    "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "version": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "n",
+              "sha256",
+              "bytes",
+              "createdBy",
+              "createdAt",
+              "note",
+              "html",
+              "contract"
+            ],
+            "properties": {
+              "n": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "createdBy": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "id",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "agent",
+                      "app",
+                      "person"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 120
+                  }
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "note": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              "html": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "object"
+              }
+            }
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "n",
+                "sha256",
+                "bytes",
+                "createdBy",
+                "createdAt",
+                "note",
+                "live",
+                "staged"
+              ],
+              "properties": {
+                "n": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                "sha256": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "note": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 200
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "staged": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "kind",
+                "label",
+                "product",
+                "op",
+                "input",
+                "projection",
+                "digest",
+                "approved",
+                "viewers",
+                "status",
+                "fetchedAt",
+                "staged",
+                "code"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "push",
+                    "read"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 80
+                },
+                "product": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "op": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "input": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "projection": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "approved": {
+                  "type": "boolean"
+                },
+                "viewers": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "empty",
+                    "ok",
+                    "held",
+                    "error",
+                    "paused",
+                    "not_approved"
+                  ]
+                },
+                "fetchedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "staged": {
+                  "type": "boolean"
+                },
+                "code": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label",
+                "createdBy",
+                "createdAt",
+                "expiresAt",
+                "revokedAt",
+                "pinVersion",
+                "views",
+                "lastSeenDay",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 40
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "revokedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pinVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "views": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "lastSeenDay": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 10
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "shape": {
+            "type": "object"
+          },
+          "data": {
+            "type": "object"
+          }
         }
       },
-      "crud": ["create"],
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_create",
+      "title": "Create a live page",
+      "description": "Save your output as a live page instead of pasting it into chat. view.html is one self-contained HTML file (no network). contract.inputs proposes data sources: kind push = data you send later with artifact_data_put; kind read = a read of another app (for example kanban issues_list) that the owner must approve before it refreshes. contract.triggers proposes a refresh schedule (owner approves). fromId copies another page you can read (its HTML and source proposals; copied sources need approval again). Returns the page id and a review link for the owner.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 280
+          },
+          "contract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "integer",
+                "const": 1
+              },
+              "inputs": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "kind"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "push",
+                        "read",
+                        "event"
+                      ],
+                      "description": "push = data you send with artifact_data_put; read = a read of another app that the owner approves; event = reserved (version 0.3)."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 80
+                    },
+                    "product": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9-]{1,31}$"
+                    },
+                    "op": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "input": {
+                      "type": "object"
+                    },
+                    "projection": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 0,
+                          "maxLength": 200,
+                          "description": "JSON pointer into the read result (RFC 6901), e.g. /items."
+                        },
+                        "pick": {
+                          "type": "array",
+                          "maxItems": 32,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "where": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        },
+                        "sort": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        },
+                        "count": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "triggers": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "schedule",
+                        "event"
+                      ],
+                      "description": "schedule = refresh every N seconds (300 to 86400); event = reserved (version 0.3)."
+                    },
+                    "everySeconds": {
+                      "type": "integer",
+                      "minimum": 300,
+                      "maximum": 86400
+                    },
+                    "source": {
+                      "description": "Reserved for event triggers (version 0.3)."
+                    }
+                  }
+                }
+              },
+              "output": {
+                "description": "Reserved for version 0.2 (data output for agents): refused with unsupported_in_this_version."
+              },
+              "program": {
+                "description": "Reserved for version 0.5 (sandboxed server runtime): refused with unsupported_in_this_version."
+              }
+            }
+          },
+          "view": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "html"
+            ],
+            "properties": {
+              "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 262144,
+                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+              },
+              "site": {
+                "description": "Reserved for version 0.4 (multi-file sites): refused with unsupported_in_this_version."
+              }
+            }
+          },
+          "fromId": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "fromVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "note": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "gallery",
+          "version",
+          "liveVersion",
+          "review",
+          "lint"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "liveVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sourcesPending",
+              "triggerPending",
+              "ownerLink"
+            ],
+            "properties": {
+              "sourcesPending": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "triggerPending": {
+                "type": "boolean"
+              },
+              "ownerLink": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "lint": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "level",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "advice"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
       "effect": "write",
-      "scopeType": "collection",
       "idempotency": "required",
-      "receipt": true,
-      "audience": "agent"
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_update",
+      "title": "Update a live page",
+      "description": "Change a live page: title, description, contract or HTML. New HTML or a new contract makes a new version; older versions stay. A changed data source needs the owner's approval again. expectedVersion refuses the update (version_conflict) if someone changed the page since you read it. On a page that is shared with a link, the new version waits for the owner (staged) unless the owner lets agents publish.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 280
+          },
+          "contract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "integer",
+                "const": 1
+              },
+              "inputs": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "key",
+                    "kind"
+                  ],
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "push",
+                        "read",
+                        "event"
+                      ],
+                      "description": "push = data you send with artifact_data_put; read = a read of another app that the owner approves; event = reserved (version 0.3)."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 80
+                    },
+                    "product": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 32,
+                      "pattern": "^[a-z][a-z0-9-]{1,31}$"
+                    },
+                    "op": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "input": {
+                      "type": "object"
+                    },
+                    "projection": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 0,
+                          "maxLength": 200,
+                          "description": "JSON pointer into the read result (RFC 6901), e.g. /items."
+                        },
+                        "pick": {
+                          "type": "array",
+                          "maxItems": 32,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 500
+                        },
+                        "where": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        },
+                        "sort": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        },
+                        "count": {
+                          "description": "Reserved for version 0.2: refused with unsupported_in_this_version."
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "triggers": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "schedule",
+                        "event"
+                      ],
+                      "description": "schedule = refresh every N seconds (300 to 86400); event = reserved (version 0.3)."
+                    },
+                    "everySeconds": {
+                      "type": "integer",
+                      "minimum": 300,
+                      "maximum": 86400
+                    },
+                    "source": {
+                      "description": "Reserved for event triggers (version 0.3)."
+                    }
+                  }
+                }
+              },
+              "output": {
+                "description": "Reserved for version 0.2 (data output for agents): refused with unsupported_in_this_version."
+              },
+              "program": {
+                "description": "Reserved for version 0.5 (sandboxed server runtime): refused with unsupported_in_this_version."
+              }
+            }
+          },
+          "view": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "html"
+            ],
+            "properties": {
+              "html": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 262144,
+                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+              },
+              "site": {
+                "description": "Reserved for version 0.4 (multi-file sites): refused with unsupported_in_this_version."
+              }
+            }
+          },
+          "note": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "version",
+          "liveVersion",
+          "staged",
+          "review",
+          "lint"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "liveVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "staged": {
+            "type": "boolean"
+          },
+          "review": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sourcesPending",
+              "triggerPending",
+              "ownerLink"
+            ],
+            "properties": {
+              "sourcesPending": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8
+              },
+              "triggerPending": {
+                "type": "boolean"
+              },
+              "ownerLink": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "lint": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "level",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "advice"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_delete",
+      "title": "Delete a live page",
+      "description": "Delete a live page with all its versions, data and links. Needs manage access to its gallery. The owner approves the deletion.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deleted",
+          "linksRevoked"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "linksRevoked": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        }
+      },
+      "crud": [
+        "delete"
+      ],
+      "effect": "destructive",
+      "holdFamily": "destructive",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "agent",
+      "scopeType": "gallery",
+      "id": "artifact_data_put",
+      "title": "Push data to a live page",
+      "description": "Send fresh data (JSON, at most 256 KiB) for one push source of a live page. The page shows it at once and labels it \"pushed by\" you. On a page that is shared with a link, the data waits for the owner (staged) unless the owner lets agents publish.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "key",
+          "data"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "data": {},
+          "note": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "bytes",
+          "digest",
+          "staged"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 262144
+          },
+          "digest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "staged": {
+            "type": "boolean"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "gallery_view",
+      "title": "Gallery",
+      "description": "Gallery page data: galleries, pages with filters and counts, and notices for the owner.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "type": "string",
+            "enum": [
+              "all",
+              "review",
+              "shared",
+              "stale",
+              "archived"
+            ]
+          },
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "galleries",
+          "items",
+          "nextCursor",
+          "counts",
+          "notices",
+          "settings"
+        ],
+        "properties": {
+          "galleries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label",
+                "access",
+                "shared",
+                "artifactCount"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "access": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32
+                },
+                "shared": {
+                  "type": "boolean"
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "title",
+                "description",
+                "gallery",
+                "status",
+                "liveVersion",
+                "stagedVersion",
+                "links",
+                "sourcesPending",
+                "refresh",
+                "updatedAt",
+                "createdBy"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 30,
+                  "maxLength": 30,
+                  "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 280
+                },
+                "gallery": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "archived"
+                  ]
+                },
+                "liveVersion": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                "stagedVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "links": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                },
+                "sourcesPending": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8
+                },
+                "refresh": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "everySeconds",
+                    "lastAt",
+                    "nextAt",
+                    "state"
+                  ],
+                  "properties": {
+                    "everySeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 300,
+                          "maximum": 86400
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lastAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "nextAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "waiting_approval",
+                        "on",
+                        "paused",
+                        "paused_error"
+                      ]
+                    }
+                  }
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "all",
+              "review",
+              "shared",
+              "stale",
+              "archived"
+            ],
+            "properties": {
+              "all": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "review": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "shared": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "stale": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "archived": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              }
+            }
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              }
+            }
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "defaultLinkDays"
+            ],
+            "properties": {
+              "defaultLinkDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 90
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "person",
+      "id": "artifact_detail",
+      "title": "Page detail",
+      "description": "One live page for the owner: live version HTML, versions, sources with their state, links with view counts, and recent activity.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact",
+          "version",
+          "versions",
+          "sources",
+          "links",
+          "activity"
+        ],
+        "properties": {
+          "artifact": {
+            "type": "object"
+          },
+          "version": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "n",
+              "sha256",
+              "bytes",
+              "createdBy",
+              "createdAt",
+              "note",
+              "html",
+              "contract"
+            ],
+            "properties": {
+              "n": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000
+              },
+              "createdBy": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "id",
+                  "name"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "agent",
+                      "app",
+                      "person"
+                    ]
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 120
+                  }
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "note": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              "html": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "object"
+              }
+            }
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "n",
+                "sha256",
+                "bytes",
+                "createdBy",
+                "createdAt",
+                "note",
+                "live",
+                "staged"
+              ],
+              "properties": {
+                "n": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                "sha256": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "note": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 200
+                },
+                "live": {
+                  "type": "boolean"
+                },
+                "staged": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "kind",
+                "label",
+                "product",
+                "op",
+                "input",
+                "projection",
+                "digest",
+                "approved",
+                "viewers",
+                "status",
+                "fetchedAt",
+                "staged",
+                "code"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z][a-z0-9_]{0,31}$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "push",
+                    "read"
+                  ]
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 80
+                },
+                "product": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "op": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "input": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "projection": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "approved": {
+                  "type": "boolean"
+                },
+                "viewers": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "empty",
+                    "ok",
+                    "held",
+                    "error",
+                    "paused",
+                    "not_approved"
+                  ]
+                },
+                "fetchedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "staged": {
+                  "type": "boolean"
+                },
+                "code": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label",
+                "createdBy",
+                "createdAt",
+                "expiresAt",
+                "revokedAt",
+                "pinVersion",
+                "views",
+                "lastSeenDay",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 40
+                },
+                "createdBy": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "revokedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pinVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "views": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "lastSeenDay": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 10
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked"
+                  ]
+                }
+              }
+            }
+          },
+          "activity": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "at",
+                "action",
+                "by",
+                "summary"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 40
+                },
+                "action": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "by": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "id",
+                    "name"
+                  ],
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "agent",
+                        "app",
+                        "person"
+                      ]
+                    },
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 0,
+                      "maxLength": 120
+                    }
+                  }
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 280
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false
+    },
+    {
+      "audience": "person",
+      "id": "publish_version",
+      "title": "Make a version live",
+      "description": "Make a version live: promote the staged version and staged data, or roll back to an older version.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "data": {
+            "type": "boolean",
+            "description": "Also publish staged pushed data (default true)."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "liveVersion",
+          "publishedKeys"
+        ],
+        "properties": {
+          "liveVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "publishedKeys": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z][a-z0-9_]{0,31}$"
+            }
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "autopublish_set",
+      "title": "Let agents change a shared page",
+      "description": "owner (default): on a shared page, agent changes wait for you. agent: agent changes go live at once.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "mode"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "agent"
+            ]
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "autoPublish"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "autoPublish": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "agent"
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "artifact_archive",
+      "title": "Archive a page",
+      "description": "Archive or restore a page. An archived page keeps its versions and data, does not refresh, and its links stop working.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "archived"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived"
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "artifact_remove",
+      "title": "Delete a page",
+      "description": "Delete a page with all its versions, data and links.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deleted",
+          "linksRevoked"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "linksRevoked": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        }
+      },
+      "crud": [
+        "delete"
+      ],
+      "effect": "destructive",
+      "holdFamily": "destructive",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "settings_set",
+      "title": "Settings",
+      "description": "Owner settings: the default lifetime of new viewer links (days).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "defaultLinkDays"
+        ],
+        "properties": {
+          "defaultLinkDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "defaultLinkDays"
+        ],
+        "properties": {
+          "defaultLinkDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true
+    },
+    {
+      "audience": "person",
+      "id": "artifact_new",
+      "title": "Add a page",
+      "description": "The owner adds a page from one HTML file (without an agent).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "html"
+        ],
+        "properties": {
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 280
+          },
+          "html": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 262144,
+            "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "gallery",
+          "version",
+          "lint"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 30,
+            "maxLength": 30,
+            "pattern": "^art_[0-9A-HJKMNP-TV-Z]{26}$"
+          },
+          "gallery": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "A gallery id: your own (your agent id), \"shared\", or one from galleries_list."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "lint": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "level",
+                "code",
+                "message"
+              ],
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "advice"
+                  ]
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 400
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true
+    }
+  ],
+  "companions": [
+    {
+      "product": "knowledge",
+      "operations": [
+        "recall",
+        "documents_search",
+        "document_get",
+        "collections_list",
+        "collection_get"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "Refresh pages with the memory you approved"
+    },
+    {
+      "product": "kanban",
+      "operations": [
+        "projects_list",
+        "goals_list",
+        "issues_list",
+        "issue_get",
+        "activity_list",
+        "work_next"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "Refresh pages with the tasks you approved"
     }
   ],
   "scopes": [
     {
-      "type": "collection",
-      "label": "Collection",
-      "labelPlural": "Collections",
+      "type": "gallery",
+      "label": "Gallery",
+      "labelPlural": "Galleries",
       "access": [
-        { "id": "read", "label": "Read", "crud": ["read"] },
-        { "id": "read_write", "label": "Read and add", "crud": ["read", "create"] }
+        {
+          "id": "read",
+          "label": "Read",
+          "crud": [
+            "read"
+          ]
+        },
+        {
+          "id": "contribute",
+          "label": "Read and add",
+          "crud": [
+            "read",
+            "create",
+            "update"
+          ]
+        },
+        {
+          "id": "manage",
+          "label": "Read, add and delete",
+          "crud": [
+            "read",
+            "create",
+            "update",
+            "delete"
+          ]
+        }
       ],
-      "defaultGrants": [{ "kind": "own", "access": "read_write" }],
-      "summaryTemplate": "{count} {labelPlural} ({access.read_write} writable)"
+      "defaultGrants": [
+        {
+          "kind": "own",
+          "access": "manage"
+        },
+        {
+          "kind": "shared",
+          "access": "contribute"
+        }
+      ],
+      "summaryTemplate": "{count} {labelPlural} ({access.contribute} shared)"
     }
   ],
-  "skills": [{ "id": "use-live-artifacts", "title": "How to use Live Artifacts", "file": "skills/use-live-artifacts/SKILL.md" }],
-  "backups": { "schedule": "30 2 * * *", "retain": 7 },
-  "ui": { "launchPath": "/", "configurePath": "/configure" }
+  "needsAgentDirectory": true,
+  "skills": [
+    {
+      "id": "use-live-artifacts",
+      "title": "How to make live pages",
+      "file": "skills/use-live-artifacts/SKILL.md"
+    }
+  ],
+  "harnessHints": [
+    {
+      "harness": "generic",
+      "instructions": "When your answer is a report, table or dashboard the owner will want to open again, save it with live-artifacts__artifact_create (one self-contained HTML file, no network) instead of pasting it. Propose data sources in contract.inputs; the owner approves them. Use live-artifacts__artifact_data_put to push fresh numbers."
+    }
+  ],
+  "backups": {
+    "schedule": "47 2 * * *",
+    "retain": 14
+  },
+  "ui": {
+    "launchPath": "/",
+    "configurePath": "/configure"
+  }
 }
