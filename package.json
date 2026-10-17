@@ -23,8 +23,8 @@
     "gen": "tb-gen all"
   },
   "dependencies": {
-    "@opt2-tealbrick/manifest": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.18/opt2-tealbrick-manifest-0.1.18.tgz",
-    "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.25/opt2-tealbrick-miniapp-sdk-0.1.25.tgz"
+    "@opt2-tealbrick/manifest": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.21/opt2-tealbrick-manifest-0.1.21.tgz",
+    "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.26/opt2-tealbrick-miniapp-sdk-0.1.26.tgz"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
