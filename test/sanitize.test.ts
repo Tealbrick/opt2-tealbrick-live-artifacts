@@ -283,13 +283,28 @@ describe("sanitizer: review fixes (S6 review)", () => {
     for (const css of ["a{content:'ok'}", "a{background:url( 'a.png' )}", "a{background:url( a.png )}", 'a{content:"it\'s"}']) assert.equal(sanitizeCss(css).blocked, 0, css);
   });
   it("an attribute bomb or a tag bomb fails closed fast, before parse5 sees it", () => {
+    const ATTRS = Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ");
     const bombs: [string, string][] = [
       ["180 KB tag with 36,000 attributes", `<a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`],
       ["svg with 38,000 attributes", `<svg ${Array.from({ length: 38_000 }, (_, i) => `d${i}="1"`).join(" ")}></svg>`],
       ["attributes behind quoted > characters", `<a ${Array.from({ length: 20_000 }, (_, i) => `a${i}=">"`).join(" ")}>x</a>`],
       ["an end tag with many attributes", `</a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>`],
       ["300,000 tags", "<b>".repeat(300_000)],
-    ];
+      // the reviewer's bypasses: contexts the scan must not honour
+      ["after the comment closer <!-->", `<!--><a ATTRS>x</a>`],
+      ["after the comment closer <!--->", `<!---><a ATTRS>x</a>`],
+      ["after a bang comment end --!>", `<!-- x --!><a ATTRS>x</a>`],
+      ["inside a style in an svg (markup there)", `<svg><style><a ATTRS></a></style></svg>`],
+      ["inside a title in an svg", `<svg><title><a ATTRS></a></title></svg>`],
+      ["inside a script in a math", `<math><script><a ATTRS></a></script></math>`],
+      ["inside a plain style", `<style><a ATTRS></a></style>`],
+      ["inside a textarea", `<textarea><a ATTRS></a></textarea>`],
+      ["hidden behind an unbalanced quote in a comment", `<!-- <p x=' --><a ATTRS>'>`],
+      ["hidden behind an unbalanced quote in a script", `<script>var a = "<p x='";</script><a ATTRS>'>`],
+      ["a quote that never closes", `<a x='" ><b ATTRS>`],
+      ["behind an unquoted value", `<a x=1<b ATTRS>`],
+      ["a tag inside a quoted value", `<a title="<b ATTRS>">`],
+    ].map(([what, html]) => [what as string, (html as string).replace("ATTRS", ATTRS)] as [string, string]);
     for (const [what, html] of bombs) {
       const t = performance.now();
       assert.throws(() => sanitizeHtml(html), what);
@@ -297,8 +312,10 @@ describe("sanitizer: review fixes (S6 review)", () => {
       assert.ok(performance.now() - t < 100, `${what} took ${(performance.now() - t).toFixed(0)} ms`);
     }
     assert.doesNotThrow(() => precheck(`<a ${Array.from({ length: SANITIZE_MAX_ATTRS }, (_, i) => `a${i}`).join(" ")}>x</a>`), "the limit itself is fine");
-    // a script that compares things is not a tag bomb
-    assert.doesNotThrow(() => precheck(`<script>for(i=0;i<n;i++){${"x ".repeat(5000)}}</script>`));
+    // the scan has no context: a script is read as markup too. Ordinary code is fine; a script with `<n` and 5,000 tokens before any `>`
+    // is refused (fail closed, accepted)
+    assert.doesNotThrow(() => precheck("<script>for(i=0;i<n;i++){ if (a>b) go(); } var s = 'a < b';</script>"));
+    assert.throws(() => precheck(`<script>for(i=0;i<n;i++){${"x ".repeat(5000)}}</script>`));
   });
   it("<template> nesting counts: template content is one level deeper than the template", () => {
     const deep = "<template>".repeat(300);

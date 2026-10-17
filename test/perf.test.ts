@@ -99,15 +99,18 @@ describe("sanitizer and viewer document path on a 1 MiB page (target: under 50 m
   });
 });
 
-describe("bomb shapes (S6 review): the serve path stays under 100 ms", () => {
+describe("bomb shapes (S6 review): a bomb fails closed in under 100 ms; a stored row is read in under 100 ms", () => {
   const BOMBS: [string, string][] = [
     ["a tag with 36,000 attributes (180 KB)", `<a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`],
     ["an svg with 38,000 attributes", `<svg ${Array.from({ length: 38_000 }, (_, i) => `d${i}="1"`).join(" ")}></svg>`],
     ["60,000 nested divs", "<div>".repeat(60_000)],
     ["250,000 tags", "<b>".repeat(250_000)],
     ["10,000 attributes each behind a quoted >", `<p ${Array.from({ length: 10_000 }, (_, i) => `a${i}=">"`).join(" ")}>x</p>`],
+    ["after the comment closer <!-->", `<!--><a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`],
+    ["inside a style in an svg", `<svg><style><a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}></a></style></svg>`],
+    ["behind an unbalanced quote in a comment", `<!-- <p x=' --><a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>'>`],
   ];
-  it("sanitizing a bomb fails closed in under 100 ms (a restored row without a stored result)", () => {
+  it("sanitizing a bomb fails closed in under 100 ms (a write, or a restored row without a stored result)", () => {
     for (const [what, html] of BOMBS) {
       clearSanitizeCache();
       const t = performance.now();
@@ -142,6 +145,22 @@ describe("bomb shapes (S6 review): the serve path stays under 100 ms", () => {
     assert.equal(r.status, 200);
     assert.ok(ms < 100 * SCALE, `${ms.toFixed(0)} ms`);
     assert.match(await r.text(), /This page cannot be shown/);
+  });
+});
+
+describe("what a legitimate-looking worst case costs at WRITE time", () => {
+  it("a 240 KB table of 60,000 anchors is sanitized once at write: well under a few seconds (not under 100 ms; serve reads the stored result)", () => {
+    const html = `<!doctype html><table>${"<a>x".repeat(60_000)}</table>`;
+    assert.ok(html.length < 256 * 1024);
+    const t = performance.now();
+    try {
+      sanitizeHtml(html);
+    } catch {
+      /* depth or size limit: failing closed is fine too */
+    }
+    const ms = performance.now() - t;
+    console.log(`perf: write-time sanitize of 60,000 <a>x in a table (${(html.length / 1024).toFixed(0)} KB): ${ms.toFixed(0)} ms`);
+    assert.ok(ms < 3000 * SCALE, `${ms.toFixed(0)} ms`);
   });
 });
 
