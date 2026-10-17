@@ -1,11 +1,4 @@
 {
-  "waivers": [
-    {
-      "id": "A9",
-      "until": "0.1.20",
-      "reason": "A9 admits only the publicRoutes purposes oauth_callback and webhook (conformance 0.1.18 source); it pre-dates purpose viewer (spec 0.1.43, MANIFEST M-PR-2). The viewer route is served only on the views origin (tb-views), never on this app's own address. Remove when conformance admits purpose viewer."
-    }
-  ],
   "setup": [
     {
       "id": "page_a",
