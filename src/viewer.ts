@@ -12,6 +12,8 @@
 //                       the page holds anyway. It is served only into a frame (Sec-Fetch-Dest: iframe).
 //   /_s/<hash>.js|css   shell assets, content-hashed, immutable
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
 import { servedDocumentOf } from "./sanitize.ts";
@@ -141,18 +143,37 @@ export interface LinkRow {
 }
 // ─────────────────────────────────────────────────────────── restore (S6 review S3-3)
 
-/** A restore replaced the database with an older one: a link revoked after that backup is active again in it, and the app cannot
- *  know which. So every link is ended after a restore and the owner makes new ones. `afterRestore` (SDK backup hook) sets this
- *  flag in the same process, before the store opens; until `endLinksAfterRestore` ran no link opens. */
-let restorePending = false;
-export function markRestored(): void {
-  restorePending = true;
+/** A restore replaces the database with an older one: a link revoked after that backup is active again in it, and the app cannot
+ *  know which. So every link is ended after a restore and the owner makes new ones.
+ *  The SDK keeps its own restore marker in `tb_*` tables the app may not read, so the app writes its own: the SDK's
+ *  `afterRestore` hook (which runs before the store opens, and whose failure rolls the restore back) records
+ *  `la_setting.restore_pending` straight into the restored file; `endLinksAfterRestore` writes `restore_handled` = the same value
+ *  in the SAME transaction that ends the links. A pending value without a matching handled value means the restore is not handled
+ *  yet, also after a crash between the two: no link opens, and onStart ends them. Nothing is kept in memory. */
+export function restoreUnhandled(db: Db): boolean {
+  const p = db.prepare("SELECT value FROM la_setting WHERE key = 'restore_pending'").get();
+  if (!p) return false;
+  const h = db.prepare("SELECT value FROM la_setting WHERE key = 'restore_handled'").get();
+  return !h || String(h.value) !== String(p.value);
 }
-export const isRestorePending = (): boolean => restorePending;
 
-/** End every link and every preview after a restore, once. Pages, versions, data and hold flags are kept as restored. */
+/** The `afterRestore` hook: record the restore in the restored database file (before the store opens). Throws on any failure,
+ *  and the SDK then rolls the whole restore back (fail closed). */
+export function recordRestore(dataDir: string | undefined): void {
+  if (!dataDir) throw new Error("TB_DATA_DIR is not set; the restore cannot be recorded");
+  const raw = new DatabaseSync(join(dataDir, "app.db"));
+  try {
+    raw.prepare("INSERT INTO la_setting (key, value) VALUES ('restore_pending', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(`${Date.now()}-${randomBytes(8).toString("hex")}`);
+  } finally {
+    raw.close();
+  }
+}
+
+/** End every link and every preview after a restore, once, and record that in the same transaction. Pages, versions, data and
+ *  hold flags are kept as restored. */
 export function endLinksAfterRestore(db: Db, now: number): number {
-  const ended = db.transaction(() => {
+  return db.transaction(() => {
+    const marker = db.prepare("SELECT value FROM la_setting WHERE key = 'restore_pending'").get()?.value;
     const rows = db.prepare("SELECT artifact_id, COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL AND expires_at > ? GROUP BY artifact_id").all(now);
     db.prepare("UPDATE la_link SET revoked_at = ? WHERE kind = 'viewer' AND revoked_at IS NULL AND expires_at > ?").run(now, now);
     db.prepare("DELETE FROM la_link WHERE kind = 'preview'").run();
@@ -164,10 +185,9 @@ export function endLinksAfterRestore(db: Db, now: number): number {
         `${Number(r.c)} link(s) ended because the data was restored from a backup; create new links`,
       );
     }
+    if (marker !== undefined) db.prepare("INSERT INTO la_setting (key, value) VALUES ('restore_handled', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(String(marker));
     return rows.reduce((n, r) => n + Number(r.c), 0);
   });
-  restorePending = false;
-  return ended;
 }
 
 /** Resolve a token to a usable link, or null (unknown, expired, revoked, artifact gone or archived). */
@@ -176,7 +196,7 @@ export function resolveToken(db: Db, token: string, now: number): LinkRow | null
   return usableLink(db.prepare("SELECT * FROM la_link WHERE token_digest = ?").get(opaqueDigest(token)), db, now);
 }
 function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number): LinkRow | null {
-  if (restorePending) return null; // a restore ended every link; the app is about to record that
+  if (restoreUnhandled(db)) return null; // a restore happened and the links are not ended yet (the app is about to do that)
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;

@@ -21,10 +21,20 @@ It is the threat model of record for the app (the longer design is internal).
 ## After a restore
 
 A restore replaces the database with an older copy. A link revoked after that backup would be active again in it, and the app cannot
-know which. So the SDK `afterRestore` hook marks the boot, no link opens until the app has recorded the restore, and then **every
-viewer link is ended and every preview deleted** (each page's activity says why). Pages, versions, data, sources and hold flags
-stay as restored; an approved hold that was flagged "Do not approve" is still refused. The owner makes new links. This is tested
-with a real backup and restore (`test/backup.test.ts`: a link revoked after the backup stays dead).
+know which. So **every viewer link is ended and every preview deleted** (each page's activity says why); pages, versions, data,
+sources and hold flags stay as restored, and an approved hold that was flagged "Do not approve" is still refused. The owner makes new
+links. How it is kept safe: the SDK `afterRestore` hook (it runs before the store opens, and if it throws the SDK rolls the restore
+back) writes `la_setting.restore_pending` into the restored file; the app ends the links and writes `restore_handled` = the same
+value in ONE transaction. A pending value without a handled one means "not handled yet", also after a crash in between: no link
+opens until `onStart` has ended them. Tested with a real backup and restore, a link revoked after the backup, and a simulated crash
+(`test/backup.test.ts`).
+
+## Stored pages and the sanitizer
+
+A page is sanitized when it is written and the result is stored with the sanitizer's rule version (`la_version.sanitizer_version`).
+A row with an older version (or none: an older backup) is sanitized again when it is served, so a fix reaches stored pages. Time:
+a bomb is refused in under 100 ms (before parse5); reading a stored row at serve is cheap; **writing** an adversarial but legal page
+costs more (a 240 KB table of 60,000 anchors: about 0.3 to 0.4 s), because the sanitize happens there.
 
 ## Known limits (accepted)
 

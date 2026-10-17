@@ -20,6 +20,10 @@ type Parent = DefaultTreeAdapterMap["parentNode"];
 type El = DefaultTreeAdapterMap["element"];
 type Txt = DefaultTreeAdapterMap["textNode"];
 
+/** The version of the sanitizer's RULES. Raise it with every change that can alter an output; a stored row with an older version
+ *  is sanitized again at serve time. (1 = the first release; rows from before the column count as 0.) */
+export const SANITIZER_VERSION = 2;
+
 /** The document we serve when a page cannot be made safe. Fixed text, no agent content. */
 export const BLOCKED_DOCUMENT = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Page not shown</title></head><body style="font:15px/1.5 system-ui,sans-serif;margin:24px"><p>This page cannot be shown.</p><p>Ask the owner of the page to check it.</p></body></html>`;
 
@@ -640,7 +644,7 @@ export function clearSanitizeCache(): void {
 /** The sanitized document of a stored version: the result stored when it was written, else (an older row, a restore) sanitized
  *  now. Fails closed to the fixed document. */
 export function servedDocumentOf(row: Record<string, unknown>): string {
-  if (row.served_html !== null && row.served_html !== undefined) return Buffer.from(row.served_html as Uint8Array).toString("utf8");
+  if (row.served_html !== null && row.served_html !== undefined && Number(row.sanitizer_version ?? 0) === SANITIZER_VERSION) return Buffer.from(row.served_html as Uint8Array).toString("utf8");
   return servedDocument(Buffer.from(row.html as Uint8Array).toString("utf8"));
 }
 
