@@ -1,6 +1,6 @@
 // S6 backup and restore on the REAL SDK: `tb.export` and the cron backup are the SDK's archive of app.db; this test proves
 // that a round trip carries everything the app keeps: pages, versions, pushed data, source approvals, links (fingerprints
-// only, never the address), view counts, hold flags and the pending hold itself, and that a restored link still opens.
+// only), view counts, hold flags and the pending hold itself, and that a restored link still opens.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
+import { DOC_KEY_SECRET, ensureDocKey } from "../src/viewer.ts";
 import { type Booted, boot, VIEWS } from "./e2e-helper.ts";
 
 const tables = (db: DatabaseSync): string[] =>
@@ -133,7 +134,27 @@ describe("backup and restore round trip (real SDK)", () => {
     }
   });
 
-  it("the archive holds the link as a fingerprint, never the address or the token", () => {
+  it("the document-ticket key (secret doc_ticket_key) is not in the export, and its plaintext is in neither archive", async () => {
+    const key = await ensureDocKey({ get: async () => null, put: async () => {} }); // the key app A uses (cached in this process)
+    assert.ok(key.length >= 32);
+    for (const [name, file] of [["export", exportFile], ["backup", archive]] as const) {
+      const out = join(root, `extract-key-${name}`);
+      mkdirSync(out);
+      execFileSync("tar", ["-xzf", join(backupDir, file), "-C", out]);
+      for (const f of readdirSync(out, { recursive: true }).map(String)) {
+        let bytes: Buffer;
+        try {
+          bytes = readFileSync(join(out, f));
+        } catch {
+          continue;
+        }
+        assert.ok(!bytes.includes(Buffer.from(key)), `the plaintext ticket key is in ${name}/${f}`);
+        if (name === "export") assert.ok(!bytes.includes(Buffer.from(DOC_KEY_SECRET)), `the secret's name is in the export file ${f}`);
+      }
+    }
+  });
+
+  it("the archive holds the link as a fingerprint and no plaintext token (the SDK keeps the answer of a link call, with the address, SEALED under TB_KEK for 24 hours; that sealed copy is in the archive)", () => {
     const out = join(root, "extract2");
     mkdirSync(out);
     execFileSync("tar", ["-xzf", join(backupDir, archive), "-C", out]);

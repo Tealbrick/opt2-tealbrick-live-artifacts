@@ -332,7 +332,7 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
     const paths = [...new Set(hits.map((h) => h.split("?")[0]))];
     console.log(`canary control (Chrome ${chromeVersion}), static page WITHOUT the sanitizer reached: ${paths.join(", ") || "nothing"}; connections: ${conns}`);
     await page.close();
-    assert.ok(hits.length + conns > 0, "the control must show that static markup can leak; if this fails, the harness or Chrome changed");
+    assert.ok(paths.includes("/s-prerender"), `the control must reach the canary through the static <link rel=prerender>; it reached: ${paths.join(", ") || "nothing"}. If this fails, Chrome or the harness changed`);
   });
 
   it("the document opened directly (no shell) is refused: 404 and 0 requests reach the canary", async () => {

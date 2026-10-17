@@ -17,7 +17,8 @@ const META_REFRESH = /<\s*meta\b[^>]{0,300}?http-equiv\s*=\s*["']?\s*refresh/i;
 /** src= / srcset= / poster= / data= / href= on a <link> pointing outside the document */
 const ATTR_URL = /\b(src|srcset|poster|data|background|href|formaction|xlink:href)\s*=\s*(?:"([^"]{0,4096})"|'([^']{0,4096})'|([^\s>]{1,4096}))/gi;
 const CSS_URL = /url\(\s*["']?\s*([^"')\s]{1,4096})/gi;
-/** href on these tags loads or navigates; <a href> navigation cannot leave the sandbox but is still a sign of an outside link */
+/** href on these tags loads or navigates. A sandboxed frame cannot follow an <a href>, but a script can still open a connection to the address
+ *  (SECURITY.md R3), so an outside link is advice, and the sanitizer removes the address when the page is shown. */
 const HREF_ATTRS = new Set(["href", "xlink:href"]);
 const CSS_IMPORT = /@import\b/i;
 const NETWORK_API = /\b(fetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|RTCPeerConnection)/;
