@@ -576,7 +576,7 @@ describe("hold texts (DESIGN T4)", () => {
     assert.match(text, /does not show: "Client notes" \("knowledge" "recall"\)\./);
     assert.match(text, /Pushed data "Numbers" \(key n\) is shown as it is now: no data yet\./);
     assert.match(text, /At the time of this request 0 links of this page are active \(at most 5\)\./);
-    assert.match(text, /without network access/);
+    assert.match(text, /In some browsers it can contact outside sites/);
     assert.ok(text.length < 16_000);
     const follow = shareHoldText(db, { id }, now);
     assert.match(follow, /7 days after you approve/);

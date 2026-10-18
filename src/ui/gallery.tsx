@@ -264,7 +264,7 @@ function AddPage({ open, onClose, onAdded, onOpen }: { open: boolean; onClose: (
           <Field label="Description" hint="Optional">
             <TextInput value={description} maxLength={400} onChange={(e) => setDescription(e.target.value)} />
           </Field>
-          <Field label="HTML file" hint="One self-contained file, at most 256 KiB. It cannot load anything from the network." error={fileError ?? undefined}>
+          <Field label="HTML file" hint="One self-contained file, at most 256 KiB. Outside files are removed when the page is shown; use data: URLs." error={fileError ?? undefined}>
             <input type="file" accept=".html,.htm,text/html" onChange={(e) => void pick(e.target.files?.[0])} />
           </Field>
           {fileName && !fileError ? <p className="tb-hint">{fileName}</p> : null}

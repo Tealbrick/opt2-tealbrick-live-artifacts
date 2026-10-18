@@ -22,8 +22,10 @@ to look at again. Do not make one for a one-off answer.
 Call `live-artifacts__artifact_create` with a `title` and `view.html`. Send an idempotency key.
 
 - One self-contained HTML file, at most 256 KiB. Inline your CSS and scripts; use `data:` URLs for images.
-- The page has **no network**. External scripts, styles, fonts, images, frames and forms do not load, and
-  `fetch`, `XMLHttpRequest` and `WebSocket` do not work. The answer lists `lint` advice; an error refuses the page.
+- Outside files are removed from the page when it is shown: external scripts, styles, fonts, images, frames, links
+  and forms do not load. Page code cannot read the owner's Tealbrick data or session; do not use `fetch`,
+  `XMLHttpRequest` or `WebSocket` (the page gets its data from `tb.onData`). In some browsers page code can contact
+  outside sites, so never ask a viewer to type private information into a page. The answer lists `lint` advice; an error refuses the page.
 - Get your data with the `tb` helper that the page always has:
 
 ```html

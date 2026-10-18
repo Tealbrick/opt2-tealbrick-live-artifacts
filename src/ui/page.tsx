@@ -331,7 +331,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 </Notice>
               )}
             </div>
-            <p className="meta">Never enter a password on a shared page. This page cannot send data anywhere.</p>
+            <p className="meta">Never enter a password on a shared page. In some browsers a page can send what it shows to outside sites, so do not type private information into it.</p>
           </div>
           <section className="tb-card la-review" aria-label="Review and share">
             <h2>Review and share</h2>
@@ -486,7 +486,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                 <p className="tb-soft">
                   Version {detail.version.n} is live: {Math.max(1, Math.round(detail.version.bytes / KIB))} KiB, written by {detail.version.createdBy.name} on {stamp(detail.version.createdAt)}. The preview on the page shows it as a viewer would see it.
                 </p>
-                <p className="tb-soft">The page cannot send data anywhere or load files from the network. A viewer can still copy what is on screen.</p>
+                <p className="tb-soft">The page cannot read your Tealbrick data or session. In some browsers a page with scripts can send what it shows to outside sites. Do not type private information into it. A viewer can still copy what is on screen.</p>
                 {detail.lint.length > 0 ? (
                   <ul className="tb-list">
                     {detail.lint.map((l) => (
@@ -507,7 +507,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
               <div className="tb-stack">
                 <Failure message={error} />
                 <h3>What data may this page show?</h3>
-                <p className="tb-soft">Page code written by an agent can see this data in the viewer’s browser. It cannot send it anywhere, but a viewer can copy what is on screen.</p>
+                <p className="tb-soft">Page code written by an agent can see this data in the viewer’s browser. In some browsers page code can send what the page shows to outside sites, so only show data you are happy for a viewer to copy.</p>
                 {detail.sources.length === 0 ? <p className="tb-soft">This page has no data sources.</p> : null}
                 <div className="la-checks">
                   {detail.sources.map((s) => (
@@ -569,7 +569,7 @@ export function ArtifactPage({ id, onGone }: { id: string; onGone: () => void })
                       <span className="tb-stack">
                         <b>What a link cannot promise</b>
                         <ul className="la-advice">
-                          <li>The page cannot send data over the network. In some browsers a very small signal can still get out, for example the names the page looks up or the set-up of a video call. That needs page code written for it and a viewer who opens the page.</li>
+                          <li>The page cannot read your Tealbrick data or session. In some browsers page code can send what the page shows, and what a viewer types, to outside sites. Do not type private information into a page. Outside files in the page markup are removed before it is shown.</li>
                           <li>Everything the page shows can be copied by whoever sees it.</li>
                           <li>A new version or new numbers from an agent wait for you before link holders see them. You can switch that off on the page.</li>
                         </ul>

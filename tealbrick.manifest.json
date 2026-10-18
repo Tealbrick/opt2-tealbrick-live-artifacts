@@ -4,7 +4,7 @@
   "id": "live-artifacts",
   "name": "Live Artifacts",
   "summary": "Pages your agents make from their work: kept, refreshed from the data you approve, and shared with a link you control.",
-  "description": "Live Artifacts keeps a good agent answer as a page you can open again, not a chat message. An agent writes one small HTML page against a fixed contract and proposes its data sources; you approve each source once, with the exact read on screen. The page then refreshes on a schedule from the apps you approved (for example Task Board and Knowledge), even after the agent is gone. Every change is a new version you can roll back. Pages run in a sandbox with no network. Values read from your apps are shown to you, never returned to agents.",
+  "description": "Live Artifacts keeps a good agent answer as a page you can open again, not a chat message. An agent writes one small HTML page against a fixed contract and proposes its data sources; you approve each source once, with the exact read on screen. The page then refreshes on a schedule from the apps you approved (for example Task Board and Knowledge), even after the agent is gone. Every change is a new version you can roll back. Pages run in a sandbox. A page cannot read your Tealbrick data or session. In some browsers it can contact outside sites. Do not type private information into it. Values read from your apps are shown to you, never returned to agents.",
   "version": "0.1.0",
   "sdkMajor": 1,
   "publisher": {
@@ -1141,7 +1141,7 @@
       "scopeType": "gallery",
       "id": "artifact_create",
       "title": "Create a live page",
-      "description": "Save your output as a live page instead of pasting it into chat. view.html is one self-contained HTML file (no network). contract.inputs proposes data sources: kind push = data you send later with artifact_data_put; kind read = a read of another app (for example kanban issues_list) that the owner must approve before it refreshes. contract.triggers proposes a refresh schedule (owner approves). fromId copies another page you can read (its HTML and source proposals; copied sources need approval again). Returns the page id and a review link for the owner.",
+      "description": "Save your output as a live page instead of pasting it into chat. view.html is one self-contained HTML file (outside files are removed when it is shown). contract.inputs proposes data sources: kind push = data you send later with artifact_data_put; kind read = a read of another app (for example kanban issues_list) that the owner must approve before it refreshes. contract.triggers proposes a refresh schedule (owner approves). fromId copies another page you can read (its HTML and source proposals; copied sources need approval again). Returns the page id and a review link for the owner.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1309,7 +1309,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 262144,
-                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). Outside files are removed when the page is shown: external scripts, styles, images, frames and forms do not load."
               },
               "site": {
                 "description": "Reserved for version 0.4 (multi-file sites): refused with unsupported_in_this_version."
@@ -1617,7 +1617,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 262144,
-                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+                "description": "One self-contained HTML file, at most 256 KiB (UTF-8). Outside files are removed when the page is shown: external scripts, styles, images, frames and forms do not load."
               },
               "site": {
                 "description": "Reserved for version 0.4 (multi-file sites): refused with unsupported_in_this_version."
@@ -4125,7 +4125,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 262144,
-            "description": "One self-contained HTML file, at most 256 KiB (UTF-8). No network: external scripts, styles, images, frames and forms do not load."
+            "description": "One self-contained HTML file, at most 256 KiB (UTF-8). Outside files are removed when the page is shown: external scripts, styles, images, frames and forms do not load."
           }
         }
       },
@@ -4292,7 +4292,7 @@
   "harnessHints": [
     {
       "harness": "generic",
-      "instructions": "When your answer is a report, table or dashboard the owner will want to open again, save it with live-artifacts__artifact_create (one self-contained HTML file, no network) instead of pasting it. Propose data sources in contract.inputs; the owner approves them. Use live-artifacts__artifact_data_put to push fresh numbers. Ask for a viewer link with live-artifacts__artifact_share: the owner approves it, and the link address comes in the answer to the approved retry (same call, same idempotency key)."
+      "instructions": "When your answer is a report, table or dashboard the owner will want to open again, save it with live-artifacts__artifact_create (one self-contained HTML file; outside files do not load) instead of pasting it. Propose data sources in contract.inputs; the owner approves them. Use live-artifacts__artifact_data_put to push fresh numbers. Ask for a viewer link with live-artifacts__artifact_share: the owner approves it, and the link address comes in the answer to the approved retry (same call, same idempotency key)."
     }
   ],
   "backups": {

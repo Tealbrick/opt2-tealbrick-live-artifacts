@@ -213,7 +213,7 @@ export function shareHoldText(db: Db, i: ShareHoldInput, now: number, opts: { vi
     lines.push(`Pushed data ${quote(d.label, 60)} (key ${d.key}) is shown as it is now: ${d.sha256 === "none" ? "no data yet" : `${kib(d.bytes)}, sha256 ${shortDigest(d.sha256)}`}.`);
   }
   lines.push(
-    "Page code written by an AI agent runs in the viewer's browser without network access. A viewer can still copy what is on screen.",
+    "Page code written by an AI agent runs in the viewer's browser. The page cannot read your Tealbrick data or session. In some browsers it can contact outside sites. Do not type private information into it. A viewer can still copy what is on screen.",
     `At the time of this request ${plural(have, "link")} of this page ${have === 1 ? "is" : "are"} active (at most ${LIMITS.linksPerArtifact}).`,
   );
   return lines.join("\n");

@@ -34,6 +34,8 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 | `fast-uri` (ajv) | 3.1.8 | BSD-3-Clause | https://github.com/fastify/fast-uri |
 | `json-schema-traverse` (ajv) | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse |
 | `require-from-string` (ajv) | 2.0.2 | MIT | https://github.com/floatdrop/require-from-string |
+| `parse5` (HTML parser of the agent-document sanitizer) | 7.3.0 | MIT | https://github.com/inikulin/parse5 |
+| `entities` (parse5) | 6.0.1 | BSD-2-Clause | https://github.com/fb55/entities |
 
 ## Base image
 
