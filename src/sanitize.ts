@@ -13,6 +13,7 @@
 // sanitizeAgentDocument) replaces this file when it ships.
 import { createHash } from "node:crypto";
 import { type DefaultTreeAdapterMap, defaultTreeAdapter, parse, serialize } from "parse5";
+import { boundedParse, maxOutputLength } from "./bounded-parse.ts";
 import { LIMITS } from "./limits.ts";
 
 type Node = DefaultTreeAdapterMap["node"];
@@ -509,34 +510,6 @@ function walk(root: Parent, mutate: boolean, f: Findings, risk?: { risky: boolea
 /** Comments are removed silently; they are not security findings. */
 const securityCount = (f: Findings): number => [...f.values()].reduce((a, b) => a + b, 0);
 
-/** The default tree adapter, plus a depth check on every insertion (parse5 calls these as it builds the tree). */
-const depthOf = new WeakMap<object, number>();
-/** A node's depth; a <template> keeps its children in .content, one level below the template (set here, because the content is
- *  created before the template is attached). */
-function setDepth(node: object, d: number): void {
-  depthOf.set(node, d);
-  const content = (node as { content?: object }).content;
-  if (content) depthOf.set(content, d + 1);
-}
-const boundedAdapter: typeof defaultTreeAdapter = {
-  ...defaultTreeAdapter,
-  appendChild(parent, child) {
-    const d = (depthOf.get(parent) ?? 0) + 1;
-    if (d > SANITIZE_MAX_DEPTH) throw new Error("document nests too deeply");
-    setDepth(child, d);
-    defaultTreeAdapter.appendChild(parent, child);
-  },
-  setTemplateContent(template, content) {
-    depthOf.set(content, (depthOf.get(template) ?? 0) + 1);
-    defaultTreeAdapter.setTemplateContent(template, content);
-  },
-  insertBefore(parent, child, reference) {
-    const d = (depthOf.get(parent) ?? 0) + 1;
-    if (d > SANITIZE_MAX_DEPTH) throw new Error("document nests too deeply");
-    setDepth(child, d);
-    defaultTreeAdapter.insertBefore(parent, child, reference);
-  },
-};
 /** At most this many attributes on one tag and this many tags in a document. parse5 checks every new attribute against the
  *  ones before it (quadratic): 36,000 attributes on one tag cost seconds, on the serve path. Beyond the limits: fail closed. */
 export const SANITIZE_MAX_ATTRS = 256;
@@ -612,7 +585,16 @@ export function precheck(src: string): void {
   }
 }
 
-const parseBounded = (html: string) => parse(html, { scriptingEnabled: true, treeAdapter: boundedAdapter });
+// every parse of agent HTML is bounded while the tree is built (src/bounded-parse.ts): depth, attributes copied or merged by the
+// parser, element count, child-list work
+/** Elements one parse may create: twice the tag starts of THIS source (a benign page makes about one element per tag, plus a few
+ *  implied ones), so a page that makes the parser multiply re-opened elements is refused early. */
+function elementCap(html: string): number {
+  let lt = 0;
+  for (let i = html.indexOf("<"); i >= 0; i = html.indexOf("<", i + 1)) lt++;
+  return Math.min(2 * SANITIZE_MAX_TAGS, 2 * lt + 64);
+}
+const parseBounded = (html: string) => boundedParse(html, { maxDepth: SANITIZE_MAX_DEPTH, maxElements: elementCap(html) }, { scriptingEnabled: true });
 
 export interface Sanitized {
   html: string;
@@ -629,6 +611,7 @@ export function sanitizeHtml(input: string): Sanitized {
   const risk = { risky: false };
   walk(doc, true, f, risk);
   const html = serialize(doc);
+  if (html.length > maxOutputLength(input.length)) throw new Error("sanitized output is far larger than the input");
   // Verification: the browser parses OUR output. It must contain nothing the sanitizer would still change. Every page
   // within the version size cap is verified (about 17 ms at the cap); a larger input (not writable through the app) only
   // when its tree has a shape known to change on a round trip. The check costs one more parse.

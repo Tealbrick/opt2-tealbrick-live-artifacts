@@ -229,6 +229,55 @@ describe("sanitizer: data: URLs that navigate or load code (S6/S7 re-check S2)",
   });
 });
 
+describe("sanitizer: parse work bounded while the tree is built (S6/S7/S8 re-checks, src/bounded-parse.ts)", () => {
+  const SCALE_ = Number(process.env.PERF_BUDGET_SCALE ?? 1);
+  const attrs = (n: number): string => Array.from({ length: n }, (_, i) => `a${i}`).join(" ");
+  const time = (fn: () => void): number => {
+    let best = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < 3; i++) {
+      clearSanitizeCache();
+      const t = performance.now();
+      fn();
+      best = Math.min(best, performance.now() - t);
+    }
+    return best;
+  };
+  // [shape, input, ceiling ms per call]; unbounded cost measured on the dev Mac in the comment
+  const refused: [string, string, number][] = [
+    ["<html z0><html z1>… x30,000 (12.5 s)", Array.from({ length: 30_000 }, (_, i) => `<html z${i}>`).join(""), 100],
+    ["<body z0><body z1>… x30,000 (12 s)", Array.from({ length: 30_000 }, (_, i) => `<body z${i}>`).join(""), 100],
+    ["<p><b a0..a255> + <p>x x20,000 (4.6 s)", `<p><b ${attrs(256)}>${"<p>x".repeat(20_000)}`, 100],
+    // these two are refused when the bound is reached, so they cost the bound itself: 250 ms per call
+    ["<p> + 8 formatting elements + <p>x x45,000 (0.6 s, 4 MB out)", `<p><b><i><u><s><em><strong><code><small>${"<p>x".repeat(45_000)}`, 250],
+    ["adoption agency detaching 99,000 children (12 s)", `<b><div>${"<br>".repeat(99_000)}</b>`, 250],
+  ];
+  for (const [what, html, ceiling] of refused)
+    it(`refused: ${what}`, () => {
+      const ms = time(() => {
+        assert.throws(() => sanitizeHtml(html));
+        assert.equal(servedDocument(html), BLOCKED_DOCUMENT);
+      });
+      assert.ok(ms < 2 * ceiling * SCALE_, `${ms.toFixed(0)} ms for two calls (ceiling ${2 * ceiling * SCALE_})`);
+    });
+  // foster parenting before an open table: parse5 searches the reference from the start of the child list; searched from the end
+  // the cost is linear, and the page is kept
+  it("text before an open table after 60,000 siblings is kept and costs linear time (5 s unbounded)", () => {
+    const html = `${"<br>".repeat(60_000)}<table>${"a ".repeat(250_000)}`;
+    const ms = time(() => assert.doesNotThrow(() => sanitizeHtml(html)));
+    assert.ok(ms < 1000 * SCALE_, `${ms.toFixed(0)} ms`);
+  });
+  it("99,990 elements foster-parented before an open table are kept in linear time (1 s unbounded)", () => {
+    const ms = time(() => assert.doesNotThrow(() => sanitizeHtml(`<table>${"<br>".repeat(99_990)}`)));
+    assert.ok(ms < 600 * SCALE_, `${ms.toFixed(0)} ms`);
+  });
+  it("quiet on good: a 3,000-row table with text between rows, mis-nested formatting around 2,000 children, <html lang> twice", () => {
+    const rows = Array.from({ length: 3000 }, (_, r) => `<tr><td class="c">${r}</td><td>v</td></tr>x`).join("");
+    assert.match(clean(`<table>${rows}</table>`), /<td class="c">2999<\/td>/);
+    assert.match(clean(`<b><div>${"<p>p</p>".repeat(2000)}</b>after`), /after/);
+    assert.match(clean('<html lang="en"><html data-x="1"><body class="k">t'), /<html lang="en" data-x="1">/);
+  });
+});
+
 describe("sanitizer: CSS", () => {
   const bad: [string, string][] = [
     ["url(http://x.test/a.png)", "url"],
