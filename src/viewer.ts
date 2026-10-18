@@ -12,11 +12,12 @@
 //                       the page holds anyway. It is served only into a frame (Sec-Fetch-Dest: iframe).
 //   /_s/<hash>.js|css   shell assets, content-hashed, immutable
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { digest, opaqueDigest, ulid, VIEWER_HEADER_FLOOR } from "@opt2-tealbrick/manifest";
 import type { AppSecrets, Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { bindData, bindsData, versionPlain, versionServed } from "./sanitize.ts";
+import { bindData, bindsData, versionPlain, versionServed } from "./agent-document.ts";
 import { type Actor, artifactRow, versionRow } from "./store.ts";
 import { injectHelper, SHELL_CSS, SHELL_CSS_PATH, SHELL_HTML, SHELL_JS, SHELL_JS_PATH, TOKENS_CSS, TOKENS_CSS_PATH } from "./viewer-assets.ts";
 
@@ -228,13 +229,66 @@ export function endLinksAfterRestore(db: Db, now: number): number {
   });
 }
 
+// The epoch file (S8): the SDK writes its restore marker (`tb_meta.restore_applied`) into the restored app.db BEFORE it calls
+// `afterRestore`. A hard kill between the two leaves a restored database without `restore_pending`, and the next boot skips the
+// archive as already applied: the hook never runs and links revoked after the backup would open again. So the app also keeps,
+// OUTSIDE app.db, the last SDK marker it has handled (TB_DATA_DIR/la-restore-epoch). A marker that differs from the file means a
+// restore that is not handled yet: no link opens (onStart runs on claim, while requests are already served), and onStart ends
+// the links and then writes the file. Read failures fail closed (no link opens) and are read again on the next request.
+export const RESTORE_EPOCH_FILE = "la-restore-epoch";
+let epoch: { dataDir: string; marker: string | null; pending: boolean } | null = null;
+/** Tests: forget the cached epoch state. */
+export function resetRestoreEpoch(): void {
+  epoch = null;
+}
+function readEpoch(dataDir: string): { dataDir: string; marker: string | null; pending: boolean } {
+  const raw = new DatabaseSync(join(dataDir, "app.db"), { readOnly: true });
+  let marker: string | null;
+  try {
+    const r = raw.prepare("SELECT value FROM tb_meta WHERE key = 'restore_applied'").get();
+    marker = r ? String(r.value) : null;
+  } finally {
+    raw.close();
+  }
+  let handled: string | null = null;
+  try {
+    handled = readFileSync(join(dataDir, RESTORE_EPOCH_FILE), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  return { dataDir, marker, pending: marker !== null && marker !== handled };
+}
+/** Is there an SDK restore this data directory has not handled yet? Cached per process (a restore happens only at boot). Without
+ *  a data directory (unit tests of the viewer) there is no SDK restore to compare. */
+export function restoreEpochPending(dataDir: string | undefined = process.env.TB_DATA_DIR): boolean {
+  if (!dataDir) return false;
+  if (epoch?.dataDir === dataDir) return epoch.pending;
+  try {
+    epoch = readEpoch(dataDir);
+    return epoch.pending;
+  } catch {
+    return true; // fail closed, read again next time
+  }
+}
+/** After the links are ended: record the handled SDK marker outside app.db (write a temp file, then rename). Throws on failure;
+ *  the restore then stays pending (no link opens) and the next boot ends the links again. */
+export function markRestoreEpochHandled(dataDir: string | undefined = process.env.TB_DATA_DIR): void {
+  if (!dataDir) return;
+  const state = epoch?.dataDir === dataDir ? epoch : readEpoch(dataDir);
+  if (state.marker === null) return;
+  const file = join(dataDir, RESTORE_EPOCH_FILE);
+  writeFileSync(`${file}.tmp`, state.marker, { encoding: "utf8", mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
+  epoch = { dataDir, marker: state.marker, pending: false };
+}
+
 /** Resolve a token to a usable link, or null (unknown, expired, revoked, artifact gone or archived). */
 export function resolveToken(db: Db, token: string, now: number): LinkRow | null {
   if (!TOKEN_RE.test(token)) return null;
   return usableLink(db.prepare("SELECT * FROM la_link WHERE token_digest = ?").get(opaqueDigest(token)), db, now);
 }
 function usableLink(r: Record<string, unknown> | undefined, db: Db, now: number): LinkRow | null {
-  if (restoreUnhandled(db)) return null; // a restore happened and the links are not ended yet (the app is about to do that)
+  if (restoreUnhandled(db) || restoreEpochPending()) return null; // a restore happened and the links are not ended yet (the app is about to do that)
   if (!r || r.revoked_at !== null || Number(r.expires_at) <= now) return null;
   const a = artifactRow(db, String(r.artifact_id));
   if (!a || String(a.status) !== "active") return null;

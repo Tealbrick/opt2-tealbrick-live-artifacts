@@ -6,7 +6,7 @@
 // There is no early refusal before the hold: the SDK access and pause checks come first for every caller (543880d).
 import { digest } from "@opt2-tealbrick/manifest";
 import type { Db, Json } from "@opt2-tealbrick/miniapp-sdk";
-import { versionServed } from "./sanitize.ts";
+import { versionServed } from "./agent-document.ts";
 import { artifactRow, versionRow } from "./store.ts";
 
 /** The sha256 stand-in for a viewer-visible push source that has no data yet. */

@@ -565,8 +565,11 @@ describe("pages that run scripts (C239)", () => {
     setHtml(id, '<!doctype html><html><body><a href="javascript:alert(1)">x</a><img src="x" alt="">&lt;script&gt;</body></html>');
     assert.equal(seen(id).runsScripts, false);
     // a script the sanitizer removes anyway does not count
-    setHtml(id, '<!doctype html><html><body><script type="speculationrules">{}</script><script src="https://x.test/a.js"></script></body></html>');
+    setHtml(id, '<!doctype html><html><body><script type="speculationrules">{}</script></body></html>');
     assert.equal(seen(id).runsScripts, false);
+    // S8 (SDK rule): an outside script loses its src but the (empty) element stays, so it still counts: the safe side
+    setHtml(id, '<!doctype html><html><body><script src="https://x.test/a.js"></script></body></html>');
+    assert.equal(seen(id).runsScripts, true);
     // a text that only SAYS script is not one
     setHtml(id, "<!doctype html><html><body><p>&lt;script&gt;alert(1)&lt;/script&gt; onclick=x</p></body></html>");
     assert.equal(seen(id).runsScripts, false);

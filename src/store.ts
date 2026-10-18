@@ -2,9 +2,9 @@
 // handlers stay thin and the tests run them against the migrated database. One state change = one transaction (L31).
 import { digest, sha256Bytes, ulid } from "@opt2-tealbrick/manifest";
 import { type Db, type Json, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { SANITIZER_VERSION, sanitizeForStore } from "./agent-document.ts";
 import { type Contract, type ContractInput, contractJson, parseStoredContract, sourceDigest } from "./contract.ts";
 import { LIMITS, utf8Bytes } from "./limits.ts";
-import { SANITIZER_VERSION, sanitizeForStore } from "./sanitize.ts";
 
 /** Manifest `scopes[].type` that guards artifacts. */
 export const GALLERY = "gallery";
@@ -296,7 +296,7 @@ export function logActivity(db: Db, artifactId: string, action: string, by: Acto
   );
 }
 
-const SANITIZE_LIMITS_TEXT = "256 nested elements, 256 attributes on one tag and 200,000 tags";
+const SANITIZE_LIMITS_TEXT = "600 nested elements, 256 attributes on one tag and 100,000 tags";
 function insertVersion(db: Db, id: string, n: number, html: string, contract: Contract, by: Actor, note: string, now: number): void {
   const bytes = Buffer.from(html, "utf8");
   const cj = contractJson(contract);

@@ -138,6 +138,7 @@ export const SHELL_HTML = `<!doctype html>
  *  document (review PR #2, finding 1: a whole-document regex was quadratic, and could land inside a comment or string). */
 export function injectHelper(html: string): string {
   const tag = `<script>${TB_HELPER}</script>`;
-  const m = /^\s{0,200}<!doctype[^>]{0,100}>/i.exec(html);
+  // after the SDK's `<!-- tb:sanitized v1 -->` marker and the doctype: a script BEFORE the doctype would put the page in quirks mode
+  const m = /^(?:\s{0,200}<!-- tb:sanitized v1 -->)?(?:\s{0,200}<!doctype[^>]{0,100}>)?/i.exec(html);
   return m ? html.slice(0, m[0].length) + tag + html.slice(m[0].length) : tag + html;
 }

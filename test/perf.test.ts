@@ -7,10 +7,10 @@ import { performance } from "node:perf_hooks";
 import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
+import { BLOCKED_DOCUMENT, clearSanitizeCache, sanitizeHtml, servedDocument } from "../src/agent-document.ts";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
 import { LIMITS } from "../src/limits.ts";
 import { lintHtml } from "../src/lint.ts";
-import { BLOCKED_DOCUMENT, clearSanitizeCache, sanitizeHtml, servedDocument } from "../src/sanitize.ts";
 import { handleViewer, newToken, resolveToken, VIEW_PREFIX, type ViewerConfig, viewData } from "../src/viewer.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -144,7 +144,7 @@ describe("bomb shapes (S6 review): a bomb fails closed in under 100 ms; a stored
     console.log(`perf: viewer path, bomb row without a stored result: ${ms.toFixed(1)} ms`);
     assert.equal(r.status, 200);
     assert.ok(ms < 100 * SCALE, `${ms.toFixed(0)} ms`);
-    assert.match(await r.text(), /This page cannot be shown/);
+    assert.match(await r.text(), /cannot be shown/);
   });
 });
 
@@ -204,7 +204,10 @@ describe("many versions, many links, large data", () => {
       await run("artifact_update", { id, view: { html: capped.replace("Big", `Big ${n}`) }, expectedVersion: n - 1 }, agent());
     };
     const ms = await timeAsync(update, 25);
-    report("artifact_update of a 255 KiB page (versions piling up)", ms, 80);
+    // S8: a page with scripts is sanitized by the SDK twice at write (scripts allowed, and the scriptless render), and each SDK call
+    // parses three times (the pass and two verification parses): ~85 ms at the cap on the dev Mac. Paid once per version; the
+    // serve path reads the stored result.
+    report("artifact_update of a 255 KiB page (versions piling up)", ms, 160);
     const kept = Number(db.prepare("SELECT COUNT(*) AS c FROM la_version WHERE artifact_id = ?").get(id)?.c);
     assert.ok(kept <= LIMITS.versionsKept + 2, `kept ${kept} versions, the limit is ${LIMITS.versionsKept} besides the live and staged ones`);
     const get = await timeAsync(() => run("artifact_get", { id, include: ["versions"] }, agent()));

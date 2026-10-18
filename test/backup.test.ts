@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, before, describe, it } from "node:test";
-import { DOC_KEY_SECRET, ensureDocKey } from "../src/viewer.ts";
+import { DOC_KEY_SECRET, ensureDocKey, RESTORE_EPOCH_FILE } from "../src/viewer.ts";
 import { type Booted, boot, VIEWS } from "./e2e-helper.ts";
 
 const tables = (db: DatabaseSync): string[] =>
@@ -249,6 +249,66 @@ describe("backup and restore round trip (real SDK)", () => {
       }
     } finally {
       await c.stop();
+    }
+  });
+
+  // S8: the SDK writes its own restore marker (tb_meta.restore_applied) into the restored app.db BEFORE it calls afterRestore. A
+  // hard kill between the two leaves no restore_pending, and the next boot skips the archive as already applied, so the hook
+  // never runs. The app compares the SDK marker with its epoch file outside app.db.
+  const killedState = (newSdkMarker: boolean): void => {
+    const db = new DatabaseSync(join(dirB, "app.db"));
+    try {
+      db.exec("DELETE FROM la_setting WHERE key IN ('restore_pending', 'restore_handled')");
+      db.exec("UPDATE la_link SET revoked_at = NULL WHERE kind = 'viewer'");
+      if (newSdkMarker) db.prepare("UPDATE tb_meta SET value = ? WHERE key = 'restore_applied'").run(JSON.stringify(`killed-${randomBytes(4).toString("hex")}`));
+    } finally {
+      db.close();
+    }
+  };
+  const aliveLinks = (): number => {
+    const db = new DatabaseSync(join(dirB, "app.db"), { readOnly: true });
+    try {
+      return Number(db.prepare("SELECT COUNT(*) AS c FROM la_link WHERE kind = 'viewer' AND revoked_at IS NULL").get()?.c);
+    } finally {
+      db.close();
+    }
+  };
+  it("the epoch file outside app.db holds the SDK marker the app handled", () => {
+    const db = new DatabaseSync(join(dirB, "app.db"), { readOnly: true });
+    try {
+      assert.equal(readFileSync(join(dirB, RESTORE_EPOCH_FILE), "utf8"), String(db.prepare("SELECT value FROM tb_meta WHERE key = 'restore_applied'").get()?.value));
+    } finally {
+      db.close();
+    }
+  });
+  it("quiet on good: the same state with the SDK marker already handled (no new restore) leaves the links alone", async () => {
+    killedState(false);
+    const d = await boot(VIEWS, { dir: dirB, keepDir: true, world: a.w, env: { TB_BACKUP_DIR: backupDir, TB_KEK: KEK } });
+    try {
+      await new Promise((r) => setTimeout(r, 300)); // onStart has run
+      assert.ok(aliveLinks() > 0, "no restore to handle: links stay as they are");
+    } finally {
+      await d.stop();
+    }
+  });
+  it("a hard kill after the SDK wrote its marker and before afterRestore: no link opens, and onStart ends them", async () => {
+    killedState(true);
+    assert.ok(aliveLinks() > 0, "links are alive in the killed state");
+    const d = await boot(VIEWS, { dir: dirB, keepDir: true, world: a.w, env: { TB_BACKUP_DIR: backupDir, TB_KEK: KEK } });
+    try {
+      assert.equal((await d.viewer(`/v/live-artifacts/${token}`, { "sec-fetch-dest": "document" })).status, 404, "the link stays dead");
+      const db = new DatabaseSync(join(dirB, "app.db"), { readOnly: true });
+      let marker: string;
+      try {
+        marker = String(db.prepare("SELECT value FROM tb_meta WHERE key = 'restore_applied'").get()?.value);
+      } finally {
+        db.close();
+      }
+      for (let i = 0; i < 100 && readFileSync(join(dirB, RESTORE_EPOCH_FILE), "utf8") !== marker; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(readFileSync(join(dirB, RESTORE_EPOCH_FILE), "utf8"), marker, "the app recorded the new marker in the epoch file");
+      assert.equal(aliveLinks(), 0, "every viewer link ended");
+    } finally {
+      await d.stop();
     }
   });
 });

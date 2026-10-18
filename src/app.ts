@@ -92,7 +92,7 @@ import {
   versionRow,
   versionsOf,
 } from "./store.ts";
-import { createPreview, endLinksAfterRestore, ensureDocKey, handleViewer, httpsOrigin, recordRestore, restoreUnhandled, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
+import { createPreview, endLinksAfterRestore, ensureDocKey, handleViewer, httpsOrigin, markRestoreEpochHandled, recordRestore, restoreEpochPending, restoreUnhandled, VIEW_PREFIX, type ViewerConfig } from "./viewer.ts";
 
 /** The viewer address of the bridge (LA-1: slice `bridge.viewUrl`, SDK `ctx.viewUrl`). The SDK's requireViewUrl answers 409
  *  view_origin_missing while there is none; it checks only that the string is not empty, so the https host check stays here
@@ -797,7 +797,12 @@ export const definition: SdkAppDefinition = {
   },
   async onStart(ctx) {
     bindScopeDb(ctx.db);
-    if (restoreUnhandled(ctx.db)) endLinksAfterRestore(ctx.db, clock()); // the data was restored from a backup and this boot has not handled it (S3-3)
+    // the data was restored from a backup and this boot has not handled it (S3-3): by the app's own marker in app.db, or by the
+    // SDK's marker compared with the epoch file outside app.db (S8: a hard kill before afterRestore). End the links, then record.
+    if (restoreUnhandled(ctx.db) || restoreEpochPending()) {
+      endLinksAfterRestore(ctx.db, clock());
+      markRestoreEpochHandled();
+    }
     await ensureDocKey(ctx.secrets); // the document-ticket key: created once, kept sealed in the SDK's secret store
     await ctx.scopes.instances.create(GALLERY, SHARED_GALLERY, "Shared", { shared: true });
   },

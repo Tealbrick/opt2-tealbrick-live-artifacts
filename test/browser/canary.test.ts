@@ -292,22 +292,26 @@ describe("containment canary (real Chrome)", { skip: available ? false : `skippe
       ["script adds <link rel=dns-prefetch>", `var l=document.createElement("link");l.rel="dns-prefetch";l.href="${C}";document.head.appendChild(l)`],
       ["fetch (control: our CSP covers it)", `fetch("${C}/p-fetch").catch(()=>{})`],
     ];
-    const rows: { channel: string; requests: string[]; connections: number }[] = [];
+    const rows: { channel: string; requests: string[]; connections: number; ran: boolean }[] = [];
     for (const [channel, code] of probes) {
       hits.length = 0;
       conns = 0;
-      const tok = addPage(`<!doctype html><h1 id="m">probe</h1><script>try{${code}}catch(e){}</script>`);
+      // the console marker proves the probe script RAN: a "blocked" row of a probe that never ran would prove nothing (L34)
+      const tok = addPage(`<!doctype html><h1 id="m">probe</h1><script>console.log("probe-ran");try{${code}}catch(e){}</script>`);
       const page = await newPage();
+      const logs: string[] = [];
+      page.on("console", (m: { text(): string }) => logs.push(m.text()));
       await page.goto(`${views.origin}/v/live-artifacts/${tok}`);
       // the click probe navigates its own frame to a blocked address, so a missing marker is not an error here
       await page.frameLocator("iframe").locator("#m").waitFor({ timeout: 4_000 }).catch(() => {});
       await page.waitForTimeout(WAIT_MS);
-      rows.push({ channel, requests: hits.map((h) => h.split("?")[0] as string), connections: conns });
+      rows.push({ channel, requests: hits.map((h) => h.split("?")[0] as string), connections: conns, ran: logs.includes("probe-ran") });
       await page.close();
     }
     const lines = rows.map((r) => `  ${r.requests.length + r.connections > 0 ? "REACHED " : "blocked "} requests=${r.requests.length} connections=${r.connections}  ${r.channel}`);
     console.log(`R3 channels (Chrome ${chromeVersion}), one script page each, through the sanitizer and our headers:\n${lines.join("\n")}`);
     if (process.env.CANARY_REPORT) writeFileSync(process.env.CANARY_REPORT, `${JSON.stringify({ chrome: chromeVersion, rows }, null, 2)}\n`);
+    assert.deepEqual(rows.filter((r) => !r.ran).map((r) => r.channel), [], "every probe script ran");
     const fetchRow = rows.find((r) => r.channel.startsWith("fetch"));
     assert.deepEqual(fetchRow?.requests, [], "the covered control channel stays quiet");
   });

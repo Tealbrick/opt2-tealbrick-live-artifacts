@@ -9,13 +9,20 @@ It is the threat model of record for the app (the longer design is internal).
   access to the parent, and it cannot read your Tealbrick data or session.
 - The document CSP has `default-src 'none'`, `connect-src 'none'`, `frame-src 'none'`, `form-action 'none'`; the shell frames only
   document tickets that are not the link token.
-- Every document is sanitized on the server before it is served (owner preview and public link; `src/sanitize.ts`, parse5).
-  It removes `<link>` (every rel), `<base>`, `<meta http-equiv>`, `<portal>`, frames and objects, `<script type=speculationrules>`,
-  every URL attribute (`src`, `href`, `srcset`, `action`, `formaction`, `ping`, `poster`, `background`, `xlink:href` …) that is not
-  `data:` or relative (an element that loads the address, such as `img`, `video`, `input`, `script`, `use`, is removed with its
-  content; on any other element, such as a link, a form, `body` or `td`, only the attribute goes and the content stays), and every
-  CSS `url()`, `@import` and `image-set()` that is not `data:` or relative (the `url()` becomes `url("data:,")`). If the parser fails, the page is too large or too deeply nested,
-  or the sanitized output does not pass a second parse, the fixed "This page cannot be shown" document is served.
+- Every document is sanitized on the server before it is served (owner preview and public link) by the SDK's
+  `sanitizeAgentDocument` (miniapp-sdk 0.1.31, rule list `AGENT_DOCUMENT_RULES` in the manifest package, shared with Creative;
+  adapter `src/agent-document.ts`). It removes `<link>` (every rel), `<base>`, `<meta http-equiv>`, forms, frames and objects,
+  `<portal>`, `<noscript>`, speculation rules and import maps, `<a ping>`, every URL attribute that is not a fragment, a raster
+  `data:` image (png, gif, jpeg, webp, avif, bmp, base64) or a path under the app's own `/v/live-artifacts/_s/` (relative URLs
+  go too; a link keeps its text and gets `rel="noreferrer noopener"`), `srcset`, every CSS `url()`, `image-set()` and `@import`
+  (a fragment such as svg `url(#g)` stays), and SMIL that writes a URL. The output starts with `<!-- tb:sanitized v1 -->`. Before
+  any parse the SDK counts tags and attributes over the WHOLE source with no context (comments, raw text and foreign content
+  included), so the bomb shapes of the S6/S7 reviews are refused in milliseconds. The app also bounds the parse depth while
+  parse5 builds the tree (interim until the SDK does it: deep nesting is quadratic in the tree builder). Every failure, and an
+  output that changes on a second parse, gives the SDK's fixed "This file cannot be shown." page.
+- Documents are served only INTO a frame (`Sec-Fetch-Dest: iframe` gate in `src/viewer.ts`, 404 otherwise), never as a top-level
+  page. So the top-level speculation-rules finding of the Creative review (a top-level document can prerender outside pages)
+  does not apply here.
 - A page without script (decided by the server from the sanitized document: no `<script>`, no inline event handler) is served as a
   scriptless render: CSP `script-src 'none'` and a sandbox without `allow-scripts`, data inlined at serve time (`data-tb-text`),
   no fetch. A link the owner approved for a page without scripts always shows the scriptless render, even if a later version gains
@@ -33,15 +40,35 @@ sources and hold flags stay as restored, and an approved hold that was flagged "
 links. How it is kept safe: the SDK `afterRestore` hook (it runs before the store opens, and if it throws the SDK rolls the restore
 back) writes `la_setting.restore_pending` into the restored file; the app ends the links and writes `restore_handled` = the same
 value in ONE transaction. A pending value without a handled one means "not handled yet", also after a crash in between: no link
-opens until `onStart` has ended them. Tested with a real backup and restore, a link revoked after the backup, and a simulated crash
-(`test/backup.test.ts`).
+opens until `onStart` has ended them. The SDK writes its own restore marker (`tb_meta.restore_applied`) into the restored file
+BEFORE it calls `afterRestore`, so a hard kill between the two would leave no `restore_pending`, and the next boot skips the archive
+as already applied. So the app also keeps the last SDK marker it handled OUTSIDE app.db, in `TB_DATA_DIR/la-restore-epoch`: a
+marker that differs from the file means a restore not handled yet; no link opens (also before `onStart`, which runs on claim while
+requests are already served), `onStart` ends the links and then writes the file. Read failures fail closed. Tested with a real
+backup and restore, a link revoked after the backup, a simulated crash, a simulated hard kill, and a control where nothing was
+restored (`test/backup.test.ts`).
 
 ## Stored pages and the sanitizer
 
 A page is sanitized when it is written and the result is stored with the sanitizer's rule version (`la_version.sanitizer_version`).
 A row with an older version (or none: an older backup) is sanitized again when it is served, so a fix reaches stored pages. Time:
-a bomb is refused in under 100 ms (before parse5); reading a stored row at serve is cheap; **writing** an adversarial but legal page
-costs more (a 240 KB table of 60,000 anchors: about 0.3 to 0.4 s), because the sanitize happens there.
+a bomb is refused in under 100 ms (before parse5, or at the depth bound while it parses); reading a stored row at serve is cheap;
+**writing** costs more, because the sanitize happens there: the SDK verifies its output with two more parses, and a page with
+scripts is sanitized twice (as it is, and as the scriptless render). A page at the 256 KiB cap costs about 85 ms to write; an
+adversarial but legal page (a 240 KB table of 60,000 anchors) about 0.4 to 0.5 s.
+
+## Data inlined into a scriptless page
+
+`data-tb-text="key.path"` slots are filled by the SDK's `fillTextSlots` (text only, escaped, never into raw-text elements; keys are
+lowercase paths). One response carries at most 256 KiB of inlined data counted as SERVED bytes (after escaping: `<` costs 4
+bytes), times the number of slots that show a key; past it one key shows "[data cut: too much for one page]" and later ones nothing.
+
+## Known false refusals (miniapp-sdk 0.1.31)
+
+The SDK's context-free count reads `<` followed by a letter as a possible tag, so a benign page with 257 or more words after such a
+`<` before the next `>` (a script `for(i=0;i<n;i++){…}` with a long body, prose "a<b" followed by 400 words) is refused at write
+(`view_not_servable`). Fail closed, not a leak; fixed in the SDK (contracts lead, miniapp-sdk 0.1.33). The tests are in
+`test/agent-document.test.ts`, skipped with that reason until the pin moves.
 
 ## Known limits (accepted)
 

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
+import { BIND_MAX_TOTAL_BYTES, BLOCKED_DOCUMENT, bindData, SANITIZER_VERSION } from "../src/agent-document.ts";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { BIND_MAX_TOTAL_BYTES, bindData, SANITIZER_VERSION } from "../src/sanitize.ts";
 import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, restoreUnhandled, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
@@ -150,7 +150,7 @@ describe("headers (app floor; the bridge adds its own, LA-1)", () => {
       assert.ok(csp.includes(d), d);
     assert.ok(!/allow-same-origin|allow-top-navigation|allow-popups|allow-forms/.test(csp), "no sandbox escape tokens");
     const html = await r.text();
-    assert.ok(html.startsWith("<!DOCTYPE html><script>"), "the helper is the first script, right after the doctype");
+    assert.ok(html.startsWith("<!-- tb:sanitized v1 --><!DOCTYPE html><script>"), "the helper is the first script, right after the SDK marker and the doctype");
     assert.ok(html.endsWith("<body>v1<script>window.x=1</script></body></html>"));
   });
 });
@@ -203,20 +203,21 @@ describe("scriptless render (C239)", () => {
   });
   it("the inlined data of one response is capped at 256 KiB: a visible marker once, nothing after it", async () => {
     const id = await page();
-    setHtml(id, `<!doctype html><html><body>${'<p data-tb-text="n.big">?</p>'.repeat(300)}</body></html>`);
+    setHtml(id, `<!doctype html><html><body>${Array.from({ length: 300 }, (_, i) => `<p data-tb-text="n.b${i}">?</p>`).join("")}</body></html>`);
     db.prepare("UPDATE la_source SET approved_digest = digest, viewers = 1 WHERE artifact_id = ? AND key = 'n'").run(id);
-    db.prepare("INSERT OR REPLACE INTO la_snapshot (artifact_id, key, data_json, bytes, status, fetched_at) VALUES (?, 'n', ?, 10, 'ok', ?)").run(id, JSON.stringify({ big: "x".repeat(1900) }), now);
+    const big = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`b${i}`, "x".repeat(1900)]));
+    db.prepare("INSERT OR REPLACE INTO la_snapshot (artifact_id, key, data_json, bytes, status, fetched_at) VALUES (?, 'n', ?, 10, 'ok', ?)").run(id, JSON.stringify(big), now);
     const html = await get(await docPath(link(id))).text();
     const inlined = (html.match(/x{1900}/g) ?? []).length;
     assert.ok(inlined * 1900 <= BIND_MAX_TOTAL_BYTES && inlined >= 100, `${inlined} values inlined`);
     assert.equal((html.match(/\[data cut: too much for one page\]/g) ?? []).length, 1, "one visible marker");
     assert.ok(html.length < BIND_MAX_TOTAL_BYTES + 64 * 1024, `${html.length} bytes served`);
   });
-  it("bindData runs the whole-source limits before it parses: an old stored row with a bomb is served unbound, fast", async () => {
+  it("bindData runs the whole-source limits before it parses: an old stored row with a bomb gets the fixed page, fast", async () => {
     const bomb = `<!doctype html><p data-tb-text="n.total">?</p><a ${Array.from({ length: 36_000 }, (_, i) => `a${i}`).join(" ")}>x</a>`;
     const t = performance.now();
     const out = bindData(bomb, { n: { total: 1 } });
-    assert.equal(out, bomb, "returned unbound");
+    assert.equal(out, BLOCKED_DOCUMENT, "the SDK's fillTextSlots fails closed over its caps");
     assert.ok(performance.now() - t < 100, `${(performance.now() - t).toFixed(0)} ms`);
   });
   it("data never goes into a raw-text element, and a page that binds nothing has no docRev", async () => {
@@ -339,7 +340,7 @@ describe("sanitized once at write time, stored per version (S6 review)", () => {
     assert.ok(stored(id)?.includes("<body>v1</body>"), String(stored(id)));
     await run("artifact_update", { id, view: { html: '<!doctype html><html><body><p>v2</p><a href="https://x.test/a">l</a><!-- c --></body></html>' } }, A());
     const v2 = stored(id, 2) ?? "";
-    assert.ok(v2.includes("<p>v2</p>") && !v2.includes("x.test") && !v2.includes("<!--"), v2);
+    assert.ok(v2.includes("<p>v2</p>") && !v2.includes("x.test") && v2.startsWith("<!-- tb:sanitized v1 -->"), v2);
     const tok = link(id);
     db.prepare("UPDATE la_artifact SET live_version = 2 WHERE id = ?").run(id);
     const html = await get(await docPath(tok)).text();
@@ -406,7 +407,7 @@ describe("every served agent document is sanitized (C238)", () => {
     const r = get(await docPath(link(id)));
     assert.equal(r.status, 200);
     assert.equal(r.headers.get("content-security-policy"), scriptlessDocumentCsp(CFG), "the fixed document runs no script");
-    assert.match(await r.text(), /This page cannot be shown/);
+    assert.match(await r.text(), /cannot be shown/);
   });
 });
 

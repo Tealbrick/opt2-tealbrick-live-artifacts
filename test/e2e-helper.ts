@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { digest, type Ed25519KeyPair, generateKeyPair, type HoldFamily, signCallProof, signGrant, signKeySetStatement, signSlice, signTicket, ulid } from "@opt2-tealbrick/manifest";
 import { decideHold, defineApp, type Json, type PersonPrincipal, type RunningApp, startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { definition } from "../src/app.ts";
-import { setDocKey } from "../src/viewer.ts";
+import { resetRestoreEpoch, setDocKey } from "../src/viewer.ts";
 
 export const nowS = () => Math.floor(Date.now() / 1000);
 export const VIEWS = "https://views-e2e.up.railway.app";
@@ -105,6 +105,7 @@ export async function boot(viewUrl: string | null, opts: { paused?: boolean; pau
   setDocKey(null);
   // a real deployment has TB_DATA_DIR in the process environment; the app's afterRestore hook reads it there
   process.env.TB_DATA_DIR = dir;
+  resetRestoreEpoch(); // a real boot is a new process: no cached restore epoch from an earlier boot in this test process
   const running = await startApp(
     defineApp(definition),
     { TB_INSTANCE_ID: w.ins, TB_ENROL_CODE: "tbe_e2e", TB_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, TB_PORTAL_KEYS: JSON.stringify({ keys: [portal.publicJwk] }), TB_DATA_DIR: dir, TB_DATA_EPHEMERAL: "1", TB_LOG_LEVEL: "error", ...opts.env },

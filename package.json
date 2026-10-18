@@ -25,7 +25,7 @@
   "dependencies": {
     "@opt2-tealbrick/manifest": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-manifest-v0.1.25/opt2-tealbrick-manifest-0.1.25.tgz",
     "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.31/opt2-tealbrick-miniapp-sdk-0.1.31.tgz",
-    "parse5": "7.3.0"
+    "parse5": "8.0.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
