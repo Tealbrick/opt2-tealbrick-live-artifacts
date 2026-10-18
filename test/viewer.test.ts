@@ -1,11 +1,15 @@
 // Viewer path (DESIGN §5.2, §5.7): uniform 404, headers, version binding, data visibility, ETag, view counts, previews.
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, it } from "node:test";
 import { opaqueDigest, ulid } from "@opt2-tealbrick/manifest";
 import type { Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
 import { BIND_MAX_TOTAL_BYTES, BLOCKED_DOCUMENT, bindData, SANITIZER_VERSION } from "../src/agent-document.ts";
 import { bindScopeDb, definition, handlers, setClock } from "../src/app.ts";
-import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, restoreUnhandled, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
+import { createPreview, docTicket, documentCsp, endLinksAfterRestore, handleViewer, httpsOrigin, newToken, PREVIEW_TTL_MS, PREVIEWS_PER_ARTIFACT, RESTORE_EPOCH_FILE, resetRestoreEpoch, resolveToken, restoreEpochPending, restoreUnhandled, scriptlessDocumentCsp, shellCsp, TOKEN_RE, VIEW_PREFIX, type ViewerConfig } from "../src/viewer.ts";
 import { injectHelper, SHELL_HTML, stripFonts, TB_HELPER } from "../src/viewer-assets.ts";
 import { AGENT_A, CRUD, ctxFor, type Instance, memorySecrets, migratedDb, OWNER } from "./helpers.ts";
 
@@ -602,5 +606,48 @@ describe("assets", () => {
     const t0 = performance.now();
     injectHelper(hostile);
     assert.ok(performance.now() - t0 < 500, "linear on hostile input (review PR #2, finding 1: the old regex took ~4 s)");
+  });
+});
+
+describe("restore epoch file (S8): a link checks it on every request, before onStart (S6/S7 re-check S4)", () => {
+  /** a data directory whose app.db carries the SDK restore marker `marker` (null: never restored) and an epoch file `handled` */
+  function dataDir(marker: string | null, handled: string | null): string {
+    const dir = mkdtempSync(join(tmpdir(), "la-epoch-"));
+    const raw = new DatabaseSync(join(dir, "app.db"));
+    raw.exec("CREATE TABLE tb_meta (key TEXT PRIMARY KEY, value TEXT)");
+    if (marker !== null) raw.prepare("INSERT INTO tb_meta (key, value) VALUES ('restore_applied', ?)").run(marker);
+    raw.close();
+    if (handled !== null) writeFileSync(join(dir, RESTORE_EPOCH_FILE), handled);
+    return dir;
+  }
+  it("pending exactly when the SDK marker differs from the handled one; an unreadable data dir fails closed", () => {
+    for (const [marker, handled, pending] of [
+      [null, null, false],
+      ["m2", null, true],
+      ["m2", "m1", true],
+      ["m2", "m2", false],
+    ] as const) {
+      resetRestoreEpoch();
+      assert.equal(restoreEpochPending(dataDir(marker, handled)), pending, `${marker}/${handled}`);
+    }
+    resetRestoreEpoch();
+    assert.equal(restoreEpochPending(join(tmpdir(), "la-epoch-missing-dir")), true);
+    resetRestoreEpoch();
+  });
+  it("a usable link resolves to null while the restore is not handled, without onStart; it opens once the epoch matches", async () => {
+    const tok = link(await page());
+    const before = process.env.TB_DATA_DIR;
+    try {
+      process.env.TB_DATA_DIR = dataDir("m2", "m1");
+      resetRestoreEpoch();
+      assert.equal(resolveToken(db, tok, now), null, "a restore not handled: no link opens");
+      process.env.TB_DATA_DIR = dataDir("m2", "m2");
+      resetRestoreEpoch();
+      assert.notEqual(resolveToken(db, tok, now), null, "control: the same link opens when the epoch matches");
+    } finally {
+      if (before === undefined) delete process.env.TB_DATA_DIR;
+      else process.env.TB_DATA_DIR = before;
+      resetRestoreEpoch();
+    }
   });
 });

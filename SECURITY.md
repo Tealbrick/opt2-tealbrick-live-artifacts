@@ -51,6 +51,20 @@ requests are already served), `onStart` ends the links and then writes the file.
 backup and restore, a link revoked after the backup, a simulated crash, a simulated hard kill, and a control where nothing was
 restored (`test/backup.test.ts`).
 
+What a restore does NOT undo yet (S6/S7 re-check S3; must be fixed BEFORE the first stable promotion, Coordinator 2026-10-18):
+changes the owner made after the backup come back as they were in the backup. A source hidden from link viewers (`viewers`,
+`approved_digest`), a refresh schedule that was stopped, a page that was archived or deleted, and an `artifact_share` hold that was
+approved but not run yet are restored with the older state. Links are ended, so nothing opens by itself, but the first new link of a
+page can show data the owner had hidden after the backup. Planned fix: on restore, re-apply the revocations newer than the backup
+from the audit log, or refuse to revive those approvals. The first S8 boot of a deployment that was EVER restored before S8 has an
+SDK marker but no epoch file, so it ends every link once.
+
+## App callers
+
+No operation declares `companionCallers`: no other app can call Live Artifacts, so there is no caller to verify here
+(`test/app.test.ts` fails when an operation declares one). The SDK refuses unverified app callers centrally from miniapp-sdk 0.1.34
+(C261); there is no app-side guard until an operation needs app callers.
+
 ## Stored pages and the sanitizer
 
 A page is sanitized when it is written and the result is stored with the sanitizer's rule version (`la_version.sanitizer_version`).

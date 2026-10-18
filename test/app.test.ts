@@ -36,6 +36,11 @@ test("manifest validates", () => {
   assert.equal(v.ok, true, v.ok ? "" : JSON.stringify(v.errors));
 });
 
+test("app callers (C243, C261): no operation declares companionCallers, so no other app can call Live Artifacts (SECURITY.md)", () => {
+  const ops = manifest.operations as unknown as readonly Record<string, unknown>[];
+  assert.ok(ops.length > 20, "the manifest operations were read");
+  assert.deepEqual(ops.filter((op) => "companionCallers" in op).map((op) => op.id), []);
+});
 test("the generated kit matches the manifest and every operation has exactly one handler", () => {
   assert.equal(MANIFEST_DIGEST, manifestDigest(manifest), "kit is stale: run node --run kit");
   const ids = manifest.operations.map((o) => o.id).sort();
