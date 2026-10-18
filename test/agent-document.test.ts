@@ -14,6 +14,8 @@ import {
   bindData,
   clearSanitizeCache,
   escapedTextBytes,
+  maxOutputLength,
+  PARSE_MAX_ELEMENTS,
   sanitizeForStore,
   sanitizeHtml,
   servedDocument,
@@ -293,6 +295,68 @@ describe("S6/S7 re-check bypass shapes: refused fast, before any parse", () => {
   });
   it("a style comment with `a<b` and a long body is not refused", { skip: SKIP }, () => {
     assert.doesNotThrow(() => sanitizeHtml(`<!doctype html><style>/* a<b ${"x ".repeat(400)}*/ p{color:red}</style><body>x</body>`));
+  });
+});
+
+describe("S8 parse DoS shapes (sdk 0.1.31 passes them): refused DURING the parse by the bounded seam", () => {
+  const attrs = (n: number, p = "a"): string => Array.from({ length: n }, (_, i) => `${p}${i}`).join(" ");
+  const FORMATTING = "<b><i><u><s><em><strong><code><small>";
+  // [shape, ceiling in ms for the three calls below]. The three shapes of the S8 re-check are refused within 100 ms in all.
+  // The element-cap shape costs what creating PARSE_MAX_ELEMENTS elements costs (~100 ms per call on the dev Mac; 3 s and 4 MB
+  // of output unbounded), so it has its own ceiling: 150 ms per call.
+  const shapes: [string, string, number][] = [
+    // adoptAttributes merges every new attribute into the root element, and parse5 rebuilds a name set per call: quadratic
+    ["<html z0><html z1>… x30,000 (370 KB, 26 s unbounded)", Array.from({ length: 30_000 }, (_, i) => `<html z${i}>`).join(""), 100],
+    ["<body z0><body z1>… x30,000 (29 s unbounded)", Array.from({ length: 30_000 }, (_, i) => `<body z${i}>`).join(""), 100],
+    // every <p> re-opens the <b> with its 256 attributes (79 KB gave 39 MB of output in 15 s)
+    ["<p><b a0..a255> + <p>x x20,000", `<p><b ${attrs(256)}>${"<p>x".repeat(20_000)}`, 100],
+    // eight formatting elements re-opened per <p>: elements the source does not count
+    ["<p>+8 formatting elements + <p>x x45,000 (over the element cap)", `<p>${FORMATTING}${"<p>x".repeat(45_000)}`, 3 * 150],
+  ];
+  for (const [what, html, ceiling] of shapes)
+    it(what, () => {
+      let ms = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < 3 && ms >= ceiling * SCALE; i++) {
+        clearSanitizeCache();
+        const t = performance.now();
+        assert.throws(() => sanitizeHtml(html), what);
+        assert.throws(() => sanitizeForStore(html), "refused at write time (store.ts answers view_not_servable)");
+        assert.equal(servedDocument(html), BLOCKED_DOCUMENT, what);
+        ms = Math.min(ms, performance.now() - t);
+      }
+      assert.ok(ms < ceiling * SCALE, `${what} took ${ms.toFixed(0)} ms (ceiling ${ceiling * SCALE} ms)`);
+    });
+  // fire-on-bad: small versions of the shapes that the plain SDK 0.1.31 accepts, so the refusal is the seam's own
+  it("the seam, not the SDK, refuses them (small versions pass the plain SDK)", () => {
+    const small = [Array.from({ length: 3_000 }, (_, i) => `<html z${i}>`).join(""), `<p><b ${attrs(256)}>${"<p>x".repeat(100)}`];
+    for (const html of small) {
+      assert.equal(sanitizeAgentDocument(html, { allowScripts: true, assetPrefix: ASSET_PREFIX }).ok, true, "the plain SDK accepts it");
+      assert.throws(() => sanitizeHtml(html), "the seam refuses it");
+    }
+  });
+  it("element cap: twice the SDK tag cap", () => {
+    assert.equal(PARSE_MAX_ELEMENTS, 200_000);
+  });
+  it("output cap: max(4 × input, input + 1 MiB); a page under the element cap that grows past it is refused", () => {
+    assert.equal(maxOutputLength(10), 10 + 1024 * 1024);
+    assert.equal(maxOutputLength(1_000_000), 4_000_000);
+    const html = `<p>${FORMATTING}${"<p>x".repeat(20_000)}`; // ~180,000 elements: under PARSE_MAX_ELEMENTS
+    const plain = sanitizeAgentDocument(html, { allowScripts: true, assetPrefix: ASSET_PREFIX });
+    assert.equal(plain.ok, true, "the plain SDK accepts it");
+    assert.ok(plain.html.length > maxOutputLength(html.length), `output ${plain.html.length} for input ${html.length}`);
+    assert.throws(() => sanitizeHtml(html), "the output cap refuses it");
+  });
+  // quiet-on-good
+  it("ordinary <html>/<body> attributes, repeated root tags and normal mis-nested formatting are kept", () => {
+    const page = `<!doctype html><html lang="en" data-theme="dark"><head><title>t</title></head><body class="x"><body id="y"><p><b>bold<i>both</p><p>again</b></i> after</p><p><b ${attrs(40)}>x${"<p>y".repeat(50)}</body></html>`;
+    const out = sanitizeHtml(page).html;
+    assert.match(out, /<html lang="en" data-theme="dark">/);
+    assert.match(out, /<body class="x" id="y">/);
+    assert.ok(out.includes("again"));
+  });
+  it("a 900-row table with attributes on every cell is kept", () => {
+    const rows = Array.from({ length: 900 }, (_, r) => `<tr>${Array.from({ length: 6 }, (_, c) => `<td class="c${c}" data-r="${r}" title="v">${r * c}</td>`).join("")}</tr>`).join("");
+    assert.doesNotThrow(() => sanitizeHtml(`<!doctype html><table>${rows}</table>`));
   });
 });
 

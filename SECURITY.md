@@ -17,8 +17,11 @@ It is the threat model of record for the app (the longer design is internal).
   go too; a link keeps its text and gets `rel="noreferrer noopener"`), `srcset`, every CSS `url()`, `image-set()` and `@import`
   (a fragment such as svg `url(#g)` stays), and SMIL that writes a URL. The output starts with `<!-- tb:sanitized v1 -->`. Before
   any parse the SDK counts tags and attributes over the WHOLE source with no context (comments, raw text and foreign content
-  included), so the bomb shapes of the S6/S7 reviews are refused in milliseconds. The app also bounds the parse depth while
-  parse5 builds the tree (interim until the SDK does it: deep nesting is quadratic in the tree builder). Every failure, and an
+  included), so the bomb shapes of the S6/S7 reviews are refused in milliseconds. The tree builder can still do far more work
+  than the source shows, so the app also bounds every parse WHILE parse5 builds the tree (interim, the rules of miniapp-sdk
+  0.1.33): depth; attributes the parser copies (re-opened formatting elements, adoption agency clones) charged attrs² against a
+  budget of 4,194,304; `<html>`/`<body>` attribute merging capped at 2,048 and charged the same way; at most 200,000 elements
+  per parse; and an output longer than max(4 × input, input + 1 MiB) is refused. Every failure, and an
   output that changes on a second parse, gives the SDK's fixed "This file cannot be shown." page.
 - Documents are served only INTO a frame (`Sec-Fetch-Dest: iframe` gate in `src/viewer.ts`, 404 otherwise), never as a top-level
   page. So the top-level speculation-rules finding of the Creative review (a top-level document can prerender outside pages)
@@ -52,7 +55,8 @@ restored (`test/backup.test.ts`).
 
 A page is sanitized when it is written and the result is stored with the sanitizer's rule version (`la_version.sanitizer_version`).
 A row with an older version (or none: an older backup) is sanitized again when it is served, so a fix reaches stored pages. Time:
-a bomb is refused in under 100 ms (before parse5, or at the depth bound while it parses); reading a stored row at serve is cheap;
+a bomb is refused in under 100 ms (before parse5, or at a parse bound while it parses; a page at the element cap costs about
+100 ms); reading a stored row at serve is cheap;
 **writing** costs more, because the sanitize happens there: the SDK verifies its output with two more parses, and a page with
 scripts is sanitized twice (as it is, and as the scriptless render). A page at the 256 KiB cap costs about 85 ms to write; an
 adversarial but legal page (a 240 KB table of 60,000 anchors) about 0.4 to 0.5 s.

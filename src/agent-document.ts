@@ -14,8 +14,9 @@ import { AGENT_DOCUMENT_UNAVAILABLE_HTML, type AgentDocumentDeps, fillTextSlots,
 import { defaultTreeAdapter, parse } from "parse5";
 
 /** The version of the sanitizer's RULES. Raise it with every change that can alter an output; a stored row with an older version
- *  is sanitized again at serve time. (1 = the first release; 2 = S6; 3 = the SDK sanitizer, S8; rows from before the column: 0.) */
-export const SANITIZER_VERSION = 3;
+ *  is sanitized again at serve time. (1 = the first release; 2 = S6; 3 = the SDK sanitizer, S8; 4 = S8 parse bounds; rows from
+ *  before the column: 0.) */
+export const SANITIZER_VERSION = 4;
 
 /** Where the app serves its own assets on the views origin (`/v/live-artifacts/_s/…`, viewer.ts). The SDK keeps URLs under it.
  *  The document CSPs still allow no script or image from there (img-src data: only), so such a URL loads nothing. */
@@ -35,38 +36,93 @@ export interface RenderOptions {
   allowScripts?: boolean;
 }
 
-// INTERIM (S8, until the SDK bounds its own parse; asked of the contracts lead for miniapp-sdk 0.1.33): the SDK checks
-// AGENT_DOCUMENT_RULES.maxDepth only AFTER parse5 has built the tree, and the tree builder is quadratic in the number of open
-// elements: 60,000 unclosed <div> cost ~10 s of one CPU at write time (S7's own sanitizer refused it in milliseconds). So every
-// parse the SDK makes (the first pass and both verification passes) goes through this parse5 with a depth check on each insert:
-// past the limit it throws and the SDK fails closed. The rules themselves stay the SDK's. The margin above maxDepth keeps every
-// page the SDK accepts. `deps.parse` is the SDK's test seam; drop this when the SDK bounds the parse itself.
+// INTERIM (S8, until the SDK bounds its own parse; miniapp-sdk 0.1.33, C259): the SDK 0.1.31 checks its caps on the SOURCE and
+// AGENT_DOCUMENT_RULES.maxDepth only AFTER parse5 has built the tree, and the tree builder can do far more work than the source
+// shows. Every parse the SDK makes (the first pass, both verification passes, fillTextSlots) goes through this parse5 with a
+// tree adapter that bounds the parse WHILE it runs; past a bound it throws and the SDK fails closed. The rules stay the SDK's;
+// these bounds mirror the 0.1.33 ones:
+// - depth: each insert records the parent's depth + 1, past maxDepth + 8 it throws (60,000 unclosed <div> cost ~10 s);
+// - copied attributes: an element whose attribute list an earlier element already used is a copy made by the parser (a
+//   formatting element re-opened, an adoption agency clone) and is charged attrs² against PARSE_ATTRIBUTE_BUDGET
+//   (`<p><b a0..a255>` + `<p>x` × 20,000 = 79 KB gave 39 MB in 15 s);
+// - <html>/<body> attribute merging (adoptAttributes): an incremental name set (parse5 rebuilds one per call: quadratic), the
+//   element capped at PARSE_MAX_ATTRIBUTES, its growth charged against the same budget (`<html z0><html z1>…` × 30,000 = 26 s);
+// - element count: at most PARSE_MAX_ELEMENTS created per parse.
+// Outside the parse, `sdk()` refuses an output longer than max(4 × input, input + 1 MiB). `deps.parse` is the SDK's test seam;
+// drop all of this when the app pins miniapp-sdk 0.1.33.
 const PARSE_MAX_DEPTH = AGENT_DOCUMENT_RULES.maxDepth + 8;
-const depthOf = new WeakMap<object, number>();
-function setDepth(node: object, d: number): void {
-  if (d > PARSE_MAX_DEPTH) throw new Error("document nests too deeply");
-  depthOf.set(node, d);
-  const content = (node as { content?: object }).content; // a <template> keeps its children one level below it
-  if (content) depthOf.set(content, d + 1);
-}
-const boundedAdapter: typeof defaultTreeAdapter = {
-  ...defaultTreeAdapter,
-  appendChild(parent, child) {
-    setDepth(child, (depthOf.get(parent) ?? 0) + 1);
-    defaultTreeAdapter.appendChild(parent, child);
-  },
-  insertBefore(parent, child, reference) {
-    setDepth(child, (depthOf.get(parent) ?? 0) + 1);
-    defaultTreeAdapter.insertBefore(parent, child, reference);
-  },
-  setTemplateContent(template, content) {
-    depthOf.set(content, (depthOf.get(template) ?? 0) + 1);
-    defaultTreeAdapter.setTemplateContent(template, content);
-  },
-};
-const BOUNDED: AgentDocumentDeps = { parse: ((html: string, options?: object) => parse(html, { ...options, treeAdapter: boundedAdapter })) as typeof parse };
+export const PARSE_MAX_ATTRIBUTES = 2048;
+export const PARSE_ATTRIBUTE_BUDGET = 4_194_304;
+export const PARSE_MAX_ELEMENTS = 2 * AGENT_DOCUMENT_RULES.maxTags;
+export const maxOutputLength = (n: number): number => Math.max(4 * n, n + 1024 * 1024);
 
-const sdk = (input: string, allowScripts: boolean): SanitizeAgentDocumentResult => sanitizeAgentDocument(input, { allowScripts, assetPrefix: ASSET_PREFIX }, BOUNDED);
+type Adapter = typeof defaultTreeAdapter;
+type AdapterElement = Parameters<Adapter["adoptAttributes"]>[0];
+function boundedAdapter(): Adapter {
+  const depthOf = new WeakMap<object, number>();
+  const usedAttrs = new WeakSet<object>();
+  const names = new WeakMap<object, Set<string>>();
+  let left = PARSE_ATTRIBUTE_BUDGET;
+  let elements = 0;
+  const over = (what: string): never => {
+    throw new Error(`document over a parse bound: ${what}`);
+  };
+  const charge = (cost: number): void => {
+    left -= cost;
+    if (left < 0) over("attributes copied by the parser");
+  };
+  const setDepth = (node: object, d: number): void => {
+    if (d > PARSE_MAX_DEPTH) over("nests too deeply");
+    depthOf.set(node, d);
+    const content = (node as { content?: object }).content; // a <template> keeps its children one level below it
+    if (content) depthOf.set(content, d + 1);
+  };
+  return {
+    ...defaultTreeAdapter,
+    createElement(tagName, namespaceURI, attrs) {
+      if (++elements > PARSE_MAX_ELEMENTS) over("too many elements");
+      if (usedAttrs.has(attrs)) {
+        if (attrs.length > PARSE_MAX_ATTRIBUTES) over("too many attributes");
+        charge(attrs.length * attrs.length);
+      } else usedAttrs.add(attrs);
+      return defaultTreeAdapter.createElement(tagName, namespaceURI, attrs);
+    },
+    appendChild(parent, child) {
+      setDepth(child, (depthOf.get(parent) ?? 0) + 1);
+      defaultTreeAdapter.appendChild(parent, child);
+    },
+    insertBefore(parent, child, reference) {
+      setDepth(child, (depthOf.get(parent) ?? 0) + 1);
+      defaultTreeAdapter.insertBefore(parent, child, reference);
+    },
+    setTemplateContent(template, content) {
+      depthOf.set(content, (depthOf.get(template) ?? 0) + 1);
+      defaultTreeAdapter.setTemplateContent(template, content);
+    },
+    adoptAttributes(recipient: AdapterElement, attrs) {
+      let set = names.get(recipient);
+      if (!set) {
+        set = new Set(recipient.attrs.map((a) => a.name));
+        names.set(recipient, set);
+      }
+      const before = recipient.attrs.length;
+      for (const a of attrs) {
+        if (set.has(a.name)) continue;
+        set.add(a.name);
+        recipient.attrs.push(a);
+      }
+      const after = recipient.attrs.length;
+      if (after > PARSE_MAX_ATTRIBUTES) over("too many attributes");
+      charge(after * after - before * before);
+    },
+  };
+}
+const BOUNDED: AgentDocumentDeps = { parse: ((html: string, options?: object) => parse(html, { ...options, treeAdapter: boundedAdapter() })) as typeof parse };
+
+const sdk = (input: string, allowScripts: boolean): SanitizeAgentDocumentResult => {
+  const r = sanitizeAgentDocument(input, { allowScripts, assetPrefix: ASSET_PREFIX }, BOUNDED);
+  return r.ok && r.html.length > maxOutputLength(input.length) ? { ok: false, html: BLOCKED_DOCUMENT, runsScripts: false, removed: [] } : r;
+};
 const unservable = (): Error => new Error("the page is over the limits or cannot be read");
 
 /** Sanitize one agent document. Throws when the SDK fails closed (over the caps, a parse failure); `servedDocumentInfo` maps that
@@ -228,7 +284,7 @@ export function bindData(html: string, values: Record<string, unknown>): string 
       } else budget -= cost;
       fill[key] = text;
     }
-    return fillTextSlots(html, fill);
+    return fillTextSlots(html, fill, BOUNDED);
   } catch {
     return html;
   }
