@@ -611,7 +611,7 @@ describe("seeded fuzz against the independent oracle", () => {
       let html = "";
       for (let k = 0; k < n; k++) html += PIECES[Math.floor(r() * PIECES.length)];
       for (const allowScripts of [true, false]) {
-        const out = sanitizeAgentDocument(html, { allowScripts, assetPrefix: ASSET_PREFIX });
+        const out = sanitizeAgentDocument(html, { allowScripts, assetPrefix: ASSET_PREFIX }, BOUNDED);
         if (!out.ok) {
           blocked++;
           assert.equal(out.html, BLOCKED_DOCUMENT);
@@ -619,7 +619,7 @@ describe("seeded fuzz against the independent oracle", () => {
         }
         assert.deepEqual(violations(out.html), [], `input: ${JSON.stringify(html)}\noutput: ${out.html}`);
         if (!allowScripts) assert.ok(!out.runsScripts && scriptsIn(out.html) === 0, `scriptless render has a script: ${JSON.stringify(html)}`);
-        assert.deepEqual(sanitizeAgentDocument(out.html, { allowScripts, assetPrefix: ASSET_PREFIX }).removed, [], `a second pass still removes something: ${JSON.stringify(html)}`);
+        assert.deepEqual(sanitizeAgentDocument(out.html, { allowScripts, assetPrefix: ASSET_PREFIX }, BOUNDED).removed, [], `a second pass still removes something: ${JSON.stringify(html)}`);
         if (!allowScripts) assert.deepEqual(violations(bindData(out.html, { n: { v: '<img src="http://x.test/v">' } })), []);
       }
     }
