@@ -253,6 +253,52 @@ describe("scriptless render (C239)", () => {
     assert.equal(d.scriptless, true);
     assert.equal(d.runsScripts, true, "the owner still sees that the page itself runs scripts");
   });
+  // C269: the public scriptless render must send a NO-NETWORK policy. The tests above compare with scriptlessDocumentCsp(), which
+  // would still pass if that function allowed a network source; this checks the property itself on the served header.
+  /** Problems of a CSP as a no-network policy: default-src 'none'; every fetch directive only 'none', data: (and 'unsafe-inline'
+   *  for style-src); script-src 'none'; form-action and base-uri 'none'; a sandbox with no allow-* token. */
+  function noNetworkProblems(csp: string): string[] {
+    const dirs = new Map(csp.split(";").map((d) => d.trim().split(/\s+/)).filter((t) => t[0]).map((t) => [String(t[0]).toLowerCase(), t.slice(1)] as const));
+    const out: string[] = [];
+    if ((dirs.get("default-src") ?? []).join(" ") !== "'none'") out.push("default-src is not 'none'");
+    for (const [name, values] of dirs) {
+      if (!name.endsWith("-src") && !["form-action", "base-uri", "navigate-to", "manifest-src", "prefetch-src"].includes(name)) continue;
+      const allowed = name === "style-src" ? ["'none'", "data:", "'unsafe-inline'"] : ["form-action", "base-uri", "script-src", "script-src-elem", "script-src-attr"].includes(name) ? ["'none'"] : ["'none'", "data:"];
+      for (const v of values) if (!allowed.includes(v.toLowerCase())) out.push(`${name} allows ${v}`);
+    }
+    for (const must of ["script-src", "form-action", "base-uri"]) if ((dirs.get(must) ?? []).join(" ") !== "'none'") out.push(`${must} is not 'none'`);
+    const sandbox = dirs.get("sandbox");
+    if (!sandbox) out.push("no sandbox");
+    else if (sandbox.length > 0) out.push(`sandbox allows ${sandbox.join(" ")}`);
+    return out;
+  }
+  it("the public scriptless render of a page that runs scripts sends a no-network CSP (property, not equality)", async () => {
+    const id = await page();
+    setHtml(id, SCRIPT_PAGE);
+    const tok = link(id, { scriptsOk: false }); // a public viewer link without script approval
+    const r = get(await docPath(tok));
+    assert.equal(r.status, 200);
+    assert.deepEqual(noNetworkProblems(r.headers.get("content-security-policy") ?? ""), []);
+    assert.equal(((await get(`/v/live-artifacts/${tok}/data`).json()) as Out).scriptless, true);
+    // fire-on-bad: the checker rejects each way a policy could let the page reach the network
+    const base = scriptlessDocumentCsp(CFG);
+    const bad: [string, string][] = [
+      ["img-src https:", base.replace("img-src data:", "img-src data: https:")],
+      ["img-src 'self'", base.replace("img-src data:", "img-src data: 'self'")],
+      ["media-src blob:", base.replace("media-src data:", "media-src data: blob:")],
+      ["connect-src *", base.replace("connect-src 'none'", "connect-src *")],
+      ["style-src https:", base.replace("style-src 'unsafe-inline'", "style-src 'unsafe-inline' https:")],
+      ["no default-src", base.replace("default-src 'none'; ", "")],
+      ["script-src 'unsafe-inline'", base.replace("script-src 'none'", "script-src 'unsafe-inline'")],
+      ["form-action 'self'", base.replace("form-action 'none'", "form-action 'self'")],
+      ["sandbox allow-scripts", base.replace(/^sandbox;/, "sandbox allow-scripts;")],
+      ["manifest-src https:", `${base}; manifest-src https:`],
+    ];
+    for (const [what, csp] of bad) {
+      assert.notEqual(csp, base, `${what}: the mutation applied`);
+      assert.ok(noNetworkProblems(csp).length > 0, `${what} is not caught`);
+    }
+  });
   it("fail closed: a link inserted WITHOUT an explicit script approval never runs scripts (scripts_ok defaults to 0)", async () => {
     const id = await page();
     setHtml(id, SCRIPT_PAGE);

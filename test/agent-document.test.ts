@@ -528,6 +528,81 @@ describe("seeded fuzz against the independent oracle", () => {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
+  // C269: an ALLOW-list verifier (the oracle above is a deny-list). Every element, every attribute and every URL-bearing value of
+  // an output must be on these lists, written from what the sanitizer is meant to keep. Anything new fails until a person looks at
+  // it and adds it here on purpose. URL-bearing attributes may hold only a fragment, a raster data: image or a path under
+  // ASSET_PREFIX, and only on a@href, img@src and use@href; no style or <style> may load anything.
+  const ALLOWED_ELEMENTS = new Set(["a", "annotation-xml", "b", "body", "button", "div", "foreignobject", "head", "html", "img", "input", "math", "mglyph", "mtext", "p", "select", "source", "style", "svg", "table", "tbody", "td", "template", "text", "textarea", "title", "tr", "use", "video"]);
+  /** names with no network meaning on any element the list allows; the last row are names that broken markup in the pieces leaves
+   *  as attribute names (`<img src="` + `<div …`), which no browser gives a meaning */
+  const ALLOWED_ATTRIBUTES = new Set([
+    ...["id", "class", "title", "lang", "dir", "style", "rel", "type", "content", "encoding", "form", "http-equiv", "alt", "width", "height"],
+    ...["b", "div", "html", "http:", "iframe", "math", "noscript", "p", "script", "select", "svg", "table", "template", "text", "textarea", "x.test"],
+  ]);
+  const URL_SLOTS = new Set(["a@href", "img@src", "use@href", "use@xlink:href"]);
+  function allowListProblems(html: string, scripts: boolean): string[] {
+    const out: string[] = [];
+    const todo: P5Node[] = [parse(html, { scriptingEnabled: true }) as unknown as P5Node];
+    while (todo.length > 0) {
+      const node = todo.pop() as P5Node;
+      todo.push(...(node.childNodes ?? []));
+      if (node.content) todo.push(node.content);
+      const tag = node.tagName?.toLowerCase();
+      if (!tag) continue;
+      const foreign = (node as { namespaceURI?: string }).namespaceURI !== "http://www.w3.org/1999/xhtml";
+      if (!(ALLOWED_ELEMENTS.has(tag) || (scripts && tag === "script"))) out.push(`element <${tag}>`);
+      if (tag === "style" && cssLoads((node.childNodes ?? []).map((c) => c.value ?? "").join(""))) out.push("<style> loads");
+      for (const a of node.attrs ?? []) {
+        const name = (a.prefix ? `${a.prefix}:${a.name}` : a.name).toLowerCase();
+        if (URL_ATTRS.includes(name) || name === "xlink:href") {
+          if (!URL_SLOTS.has(`${tag}@${name}`)) out.push(`${tag}@${name}`);
+          else if (!urlOk(a.value)) out.push(`${tag}@${name}=${a.value}`);
+          continue;
+        }
+        if ((name === "style" || foreign) && cssLoads(a.value)) out.push(`${tag}@${name} loads`);
+        if (/^on/.test(name) && scripts) continue;
+        if (name.startsWith("data-") || name.startsWith("aria-") || ALLOWED_ATTRIBUTES.has(name)) continue;
+        out.push(`${tag}@${name}`);
+      }
+    }
+    return out;
+  }
+  it("30,000 fuzz outputs, both renders and the filled scriptless one: every element, attribute and URL value on the allow-list", () => {
+    const r = rng(20261019);
+    let checked = 0;
+    for (let i = 0; i < 30_000; i++) {
+      const n = 1 + Math.floor(r() * 24);
+      let html = "";
+      for (let k = 0; k < n; k++) html += PIECES[Math.floor(r() * PIECES.length)];
+      for (const allowScripts of [true, false]) {
+        let out: string;
+        try {
+          out = sanitizeHtml(html, { allowScripts }).html; // the app's path: the SDK through the bounded seam
+        } catch {
+          continue; // failed closed
+        }
+        checked++;
+        assert.deepEqual(allowListProblems(out, allowScripts), [], `input: ${JSON.stringify(html)}\noutput: ${out}`);
+        if (!allowScripts) assert.deepEqual(allowListProblems(bindData(out, { n: { v: '<img src="http://x.test/v">' } }), false), []);
+      }
+    }
+    assert.ok(checked > 55_000, `only ${checked} outputs checked`);
+  });
+  it("fire-on-bad: the allow-list verifier flags each network-capable sink put into a clean output", () => {
+    const good = sanitizeHtml('<!doctype html><body><p data-tb-text="n.v">x</p><img src="data:image/png;base64,AAAA" alt="a"><a href="#top">t</a><svg><use href="#g"/></svg></body>', { allowScripts: false }).html;
+    assert.deepEqual(allowListProblems(good, false), []);
+    const sinks = [
+      '<img src="http://x.test/a">', "<img srcset=\"http://x.test/a 1x\">", '<a href="//x.test/">l</a>', '<form action="http://x.test/f"></form>', '<button formaction="http://x.test/f">b</button>',
+      '<video poster="http://x.test/p"></video>', '<table background="http://x.test/b"></table>', '<div style="background:url(//x.test/c)">d</div>', "<style>@import '//x.test/a.css';</style>",
+      '<meta http-equiv="refresh" content="0;url=http://x.test/">', '<base href="http://x.test/">', '<link rel="stylesheet" href="http://x.test/s.css">', '<svg><image href="http://x.test/i"/></svg>',
+      '<p onclick="go()">x</p>', "<script>1</script>", "<marquee>m</marquee>", '<p foo="1">x</p>',
+    ];
+    for (const sink of sinks) {
+      const bad = good.replace("</body>", `${sink}</body>`);
+      assert.notEqual(bad, good, sink);
+      assert.ok(allowListProblems(bad, false).length > 0, `not caught: ${sink}`);
+    }
+  });
   it("3000 random documents, both renders: nothing the oracle flags, a second pass removes nothing, filled slots stay clean", () => {
     const r = rng(20261018);
     let blocked = 0;
