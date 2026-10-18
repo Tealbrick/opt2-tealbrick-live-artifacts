@@ -1,0 +1,5 @@
+# Reviewed false positives (generic-api-key): synthetic idempotency keys of the S4 links test in history commit b5c8b18
+# ("idem-key-person-1", "idem-key-person-2"); later commits renamed them. Exact fingerprints only, never a path.
+b5c8b185a0f194923c9a1fcfccdafcb49cec4422:test/links-e2e.test.ts:generic-api-key:372
+b5c8b185a0f194923c9a1fcfccdafcb49cec4422:test/links-e2e.test.ts:generic-api-key:380
+b5c8b185a0f194923c9a1fcfccdafcb49cec4422:test/links-e2e.test.ts:generic-api-key:403
