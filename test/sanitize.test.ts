@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parse } from "parse5";
+import { boundedParse, ParseLimitExceeded } from "../src/bounded-parse.ts";
 import { BLOCKED_DOCUMENT, classifyUrl, clearSanitizeCache, precheck, SANITIZE_MAX_ATTRS, SANITIZE_MAX_BYTES, sanitizeCss, sanitizeHtml, servedDocument, srcsetUrls } from "../src/sanitize.ts";
 
 const clean = (html: string): string => sanitizeHtml(html).html;
@@ -269,6 +270,51 @@ describe("sanitizer: parse work bounded while the tree is built (S6/S7/S8 re-che
   it("99,990 elements foster-parented before an open table are kept in linear time (1 s unbounded)", () => {
     const ms = time(() => assert.doesNotThrow(() => sanitizeHtml(`<table>${"<br>".repeat(99_990)}`)));
     assert.ok(ms < 600 * SCALE_, `${ms.toFixed(0)} ms`);
+  });
+  it("quiet on good: unclosed formatting in every list item or paragraph (S6 verifier F1: refused by the old element cap)", () => {
+    assert.doesNotThrow(() => sanitizeHtml(`<ul>${"<li><b>item".repeat(2000)}`));
+    assert.doesNotThrow(() => sanitizeHtml(`<ul>${"<li><b><i>item".repeat(1000)}`));
+    assert.doesNotThrow(() => sanitizeHtml(`<p><b><i>Title${"<p>text".repeat(2000)}`));
+  });
+  it("output cap: a re-opened <b> with a 1,000-character attribute in 20,000 paragraphs is refused (20 MB of output, 1.4 s without it)", () => {
+    const ms = time(() => assert.throws(() => sanitizeHtml(`<p><b a="${"X".repeat(1000)}">t${"<p>t".repeat(20_000)}`), /far larger/));
+    assert.ok(ms < 500 * SCALE_, `${ms.toFixed(0)} ms`);
+  });
+  it("depth: a subtree moved by the parser is measured again, so nothing deeper than the bound is accepted (S6 verifier F3)", () => {
+    // depth of ELEMENTS (the bound's unit): a text or comment node is not a level
+    const realDepth = (n: { childNodes?: object[]; content?: object }, d = 0): number => {
+      let m = d;
+      for (const c of n.childNodes ?? []) if ("childNodes" in c) m = Math.max(m, realDepth(c as never, d + 1));
+      return n.content ? Math.max(m, realDepth(n.content as never, d + 1)) : m;
+    };
+    // found by the verifier: accepted at real depth 9 under maxDepth 8 when moved subtrees were not measured again
+    const html = "<tr><a><li>x</li><em><b></p><p></i><foreignObject><p></br><a><li><i><td><p><br></foreignObject>";
+    let accepted = 0;
+    try {
+      const doc = boundedParse(html, { maxDepth: 8, maxElements: 1000 }, { scriptingEnabled: true });
+      accepted++;
+      assert.ok(realDepth(doc as never) <= 8, `accepted at real depth ${realDepth(doc as never)}`);
+    } catch (e) {
+      assert.ok(e instanceof ParseLimitExceeded, String(e));
+    }
+    // and a seeded run over mis-nested pages at a small bound
+    const parts = ["<b>", "</b>", "<i>", "</i>", "<a>", "</a>", "<div>", "<p>", "</p>", "<table>", "<tr>", "<td>", "x", "<li>", "<em>", "<foreignObject>", "</br>"];
+    let seed = 11;
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    for (let i = 0; i < 3000; i++) {
+      const page = Array.from({ length: 10 + rnd(40) }, () => parts[rnd(parts.length)]).join("");
+      try {
+        const doc = boundedParse(page, { maxDepth: 12, maxElements: 10_000 }, { scriptingEnabled: true });
+        accepted++;
+        assert.ok(realDepth(doc as never) <= 12, `${page}: accepted at real depth ${realDepth(doc as never)}`);
+      } catch (e) {
+        assert.ok(e instanceof ParseLimitExceeded, String(e));
+      }
+    }
+    assert.ok(accepted > 1000, `only ${accepted} accepted`);
   });
   it("quiet on good: a 3,000-row table with text between rows, mis-nested formatting around 2,000 children, <html lang> twice", () => {
     const rows = Array.from({ length: 3000 }, (_, r) => `<tr><td class="c">${r}</td><td>v</td></tr>x`).join("");

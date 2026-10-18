@@ -587,12 +587,13 @@ export function precheck(src: string): void {
 
 // every parse of agent HTML is bounded while the tree is built (src/bounded-parse.ts): depth, attributes copied or merged by the
 // parser, element count, child-list work
-/** Elements one parse may create: twice the tag starts of THIS source (a benign page makes about one element per tag, plus a few
- *  implied ones), so a page that makes the parser multiply re-opened elements is refused early. */
+/** Elements one parse may create: three times the tag starts of THIS source plus 4,096. A benign page makes about one element per
+ *  tag; an unclosed <b> in every list item makes up to 2.5 (the parser re-opens it, at most 3 copies of one kind), which a cap of
+ *  2 × + 64 refused at 69 items (S6 verifier F1). A page that makes the parser multiply re-opened elements is still refused early. */
 function elementCap(html: string): number {
   let lt = 0;
   for (let i = html.indexOf("<"); i >= 0; i = html.indexOf("<", i + 1)) lt++;
-  return Math.min(2 * SANITIZE_MAX_TAGS, 2 * lt + 64);
+  return Math.min(2 * SANITIZE_MAX_TAGS, 3 * lt + 4096);
 }
 const parseBounded = (html: string) => boundedParse(html, { maxDepth: SANITIZE_MAX_DEPTH, maxElements: elementCap(html) }, { scriptingEnabled: true });
 
