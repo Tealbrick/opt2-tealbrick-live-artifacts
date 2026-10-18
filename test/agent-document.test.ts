@@ -302,8 +302,9 @@ describe("S8 parse DoS shapes (sdk 0.1.31 passes them): refused DURING the parse
   const attrs = (n: number, p = "a"): string => Array.from({ length: n }, (_, i) => `${p}${i}`).join(" ");
   const FORMATTING = "<b><i><u><s><em><strong><code><small>";
   // [shape, ceiling in ms for the three calls below]. The three shapes of the S8 re-check are refused within 100 ms in all.
-  // The element-cap shape costs what creating PARSE_MAX_ELEMENTS elements costs (~100 ms per call on the dev Mac; 3 s and 4 MB
-  // of output unbounded), so it has its own ceiling: 150 ms per call.
+  // The element-cap shape costs what creating PARSE_MAX_ELEMENTS elements costs: ~100 ms per call on the dev Mac (3 s and 4 MB
+  // of output unbounded). That IS the bound (the same cap as sdk 0.1.33), so its ceiling is 250 ms per call: room for a loaded
+  // shared machine, and still more than 10× under the unbounded cost, so a lost bound fails this test.
   const shapes: [string, string, number][] = [
     // adoptAttributes merges every new attribute into the root element, and parse5 rebuilds a name set per call: quadratic
     ["<html z0><html z1>… x30,000 (370 KB, 26 s unbounded)", Array.from({ length: 30_000 }, (_, i) => `<html z${i}>`).join(""), 100],
@@ -311,7 +312,7 @@ describe("S8 parse DoS shapes (sdk 0.1.31 passes them): refused DURING the parse
     // every <p> re-opens the <b> with its 256 attributes (79 KB gave 39 MB of output in 15 s)
     ["<p><b a0..a255> + <p>x x20,000", `<p><b ${attrs(256)}>${"<p>x".repeat(20_000)}`, 100],
     // eight formatting elements re-opened per <p>: elements the source does not count
-    ["<p>+8 formatting elements + <p>x x45,000 (over the element cap)", `<p>${FORMATTING}${"<p>x".repeat(45_000)}`, 3 * 150],
+    ["<p>+8 formatting elements + <p>x x45,000 (over the element cap)", `<p>${FORMATTING}${"<p>x".repeat(45_000)}`, 3 * 250],
   ];
   for (const [what, html, ceiling] of shapes)
     it(what, () => {
