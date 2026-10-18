@@ -108,7 +108,9 @@ export async function boot(viewUrl: string | null, opts: { paused?: boolean; pau
   const running = await startApp(
     defineApp(definition),
     { TB_INSTANCE_ID: w.ins, TB_ENROL_CODE: "tbe_e2e", TB_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, TB_PORTAL_KEYS: JSON.stringify({ keys: [portal.publicJwk] }), TB_DATA_DIR: dir, TB_DATA_EPHEMERAL: "1", TB_LOG_LEVEL: "error", ...opts.env },
-    { portalRootKeys: [root.publicJwk], port: 0 } as Parameters<typeof startApp>[2],
+    // privilegeProc: the SDK's test facade (C53 drop). CI runs the tests as root; a real drop to uid 1000 hands only TB_DATA_DIR
+    // and TB_BACKUP_DIR to that uid, so a data dir under a root-owned 0700 temp folder (backup.test.ts) is out of its reach
+    { portalRootKeys: [root.publicJwk], port: 0, privilegeProc: { getuid: () => 4242 } } as Parameters<typeof startApp>[2],
   );
   for (let i = 0; i < 200 && running.status() !== "ok"; i++) await new Promise((r) => setTimeout(r, 25));
   if (running.status() !== "ok") {
