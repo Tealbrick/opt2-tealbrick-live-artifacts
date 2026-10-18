@@ -41,7 +41,11 @@ export interface RenderOptions {
 // shows. Every parse the SDK makes (the first pass, both verification passes, fillTextSlots) goes through this parse5 with a
 // tree adapter that bounds the parse WHILE it runs; past a bound it throws and the SDK fails closed. The rules stay the SDK's;
 // these bounds mirror the 0.1.33 ones:
-// - depth: each insert records the parent's depth + 1, past maxDepth + 8 it throws (60,000 unclosed <div> cost ~10 s);
+// - depth: each insert records the parent's depth + 1, past maxDepth + 8 it throws (60,000 unclosed <div> cost ~10 s). A node
+//   that is inserted again or arrives with children (adoption agency, foster parenting: children are moved onto a new element
+//   before it is attached) has its subtree measured again when it lands deeper than recorded, and a node never gets a depth
+//   below its recorded one, so a recorded depth is never below the real one (S8 re-check S3); the re-measuring is bounded by
+//   PARSE_MAX_MOVE_VISITS;
 // - copied attributes: an element whose attribute list an earlier element already used is a copy made by the parser (a
 //   formatting element re-opened, an adoption agency clone) and is charged attrs² against PARSE_ATTRIBUTE_BUDGET
 //   (`<p><b a0..a255>` + `<p>x` × 20,000 = 79 KB gave 39 MB in 15 s);
@@ -54,6 +58,7 @@ const PARSE_MAX_DEPTH = AGENT_DOCUMENT_RULES.maxDepth + 8;
 export const PARSE_MAX_ATTRIBUTES = 2048;
 export const PARSE_ATTRIBUTE_BUDGET = 4_194_304;
 export const PARSE_MAX_ELEMENTS = 2 * AGENT_DOCUMENT_RULES.maxTags;
+const PARSE_MAX_MOVE_VISITS = 20 * AGENT_DOCUMENT_RULES.maxTags;
 export const maxOutputLength = (n: number): number => Math.max(4 * n, n + 1024 * 1024);
 
 type Adapter = typeof defaultTreeAdapter;
@@ -71,11 +76,32 @@ function boundedAdapter(): Adapter {
     left -= cost;
     if (left < 0) over("attributes copied by the parser");
   };
-  const setDepth = (node: object, d: number): void => {
+  let moveVisits = 0;
+  type Parent = { childNodes: object[]; content?: Parent };
+  const isParent = (n: object): n is Parent => "childNodes" in n;
+  /** Measures again the subtree under `node`, recorded at depth d (a <template> keeps its children one level below it). */
+  const remeasure = (node: Parent, d: number): void => {
+    if (node.content) {
+      if (d + 1 > (depthOf.get(node.content) ?? -1)) depthOf.set(node.content, d + 1);
+      remeasure(node.content, depthOf.get(node.content) as number);
+    }
+    for (const child of node.childNodes) {
+      if (++moveVisits > PARSE_MAX_MOVE_VISITS) over("too many moved nodes");
+      if (!isParent(child)) continue;
+      if (d + 1 > PARSE_MAX_DEPTH) over("nests too deeply");
+      if (d + 1 > (depthOf.get(child) ?? -1)) depthOf.set(child, d + 1);
+      remeasure(child, depthOf.get(child) as number);
+    }
+  };
+  const place = (parent: object, child: object): void => {
+    if (!isParent(child)) return; // text, comment, doctype: leaves
+    const d = (depthOf.get(parent) ?? 0) + 1;
     if (d > PARSE_MAX_DEPTH) over("nests too deeply");
-    depthOf.set(node, d);
-    const content = (node as { content?: object }).content; // a <template> keeps its children one level below it
-    if (content) depthOf.set(content, d + 1);
+    const old = depthOf.get(child);
+    if (old !== undefined && d <= old) return; // same depth or shallower: the recorded depth stays an upper bound
+    depthOf.set(child, d);
+    if (child.childNodes.length > 0 || (child.content && child.content.childNodes.length > 0)) remeasure(child, d);
+    else if (child.content) depthOf.set(child.content, d + 1);
   };
   return {
     ...defaultTreeAdapter,
@@ -88,11 +114,11 @@ function boundedAdapter(): Adapter {
       return defaultTreeAdapter.createElement(tagName, namespaceURI, attrs);
     },
     appendChild(parent, child) {
-      setDepth(child, (depthOf.get(parent) ?? 0) + 1);
+      place(parent, child);
       defaultTreeAdapter.appendChild(parent, child);
     },
     insertBefore(parent, child, reference) {
-      setDepth(child, (depthOf.get(parent) ?? 0) + 1);
+      place(parent, child);
       defaultTreeAdapter.insertBefore(parent, child, reference);
     },
     setTemplateContent(template, content) {
@@ -117,7 +143,8 @@ function boundedAdapter(): Adapter {
     },
   };
 }
-const BOUNDED: AgentDocumentDeps = { parse: ((html: string, options?: object) => parse(html, { ...options, treeAdapter: boundedAdapter() })) as typeof parse };
+/** The bounded parse every SDK call here uses (exported for its tests). */
+export const BOUNDED: AgentDocumentDeps = { parse: ((html: string, options?: object) => parse(html, { ...options, treeAdapter: boundedAdapter() })) as typeof parse };
 
 const sdk = (input: string, allowScripts: boolean): SanitizeAgentDocumentResult => {
   const r = sanitizeAgentDocument(input, { allowScripts, assetPrefix: ASSET_PREFIX }, BOUNDED);

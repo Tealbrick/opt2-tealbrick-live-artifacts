@@ -11,6 +11,7 @@ import {
   BIND_CUT_MARKER,
   BIND_MAX_TOTAL_BYTES,
   BLOCKED_DOCUMENT,
+  BOUNDED,
   bindData,
   clearSanitizeCache,
   escapedTextBytes,
@@ -334,6 +335,37 @@ describe("S8 parse DoS shapes (sdk 0.1.31 passes them): refused DURING the parse
       assert.equal(sanitizeAgentDocument(html, { allowScripts: true, assetPrefix: ASSET_PREFIX }).ok, true, "the plain SDK accepts it");
       assert.throws(() => sanitizeHtml(html), "the seam refuses it");
     }
+  });
+  // S8 re-check S3: the adoption agency moves children onto a new element before it is attached. The recorded depth must never
+  // fall below the real one (the moved subtree is measured again), so whatever the bounded parse accepts is within its bound.
+  it("adoption agency and foster parenting moves: an accepted parse is never deeper than the bound (seeded)", () => {
+    const realDepth = (n: { childNodes?: object[]; content?: object }, d = 0): number => {
+      let m = d;
+      for (const c of n.childNodes ?? []) m = Math.max(m, realDepth(c as never, d + 1));
+      return n.content ? Math.max(m, realDepth(n.content as never, d + 1)) : m;
+    };
+    const parts = ["<b>", "</b>", "<i>", "</i>", "<a>", "</a>", "<div>", "<span>", "<p>", "</p>", "<table>", "<tr>", "<td>", "x", "<template>", "</template>", "<nobr>", "<font>"];
+    let seed = 7;
+    const rnd = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    let accepted = 0;
+    for (let i = 0; i < 60; i++) {
+      const html = `<body>${Array.from({ length: 400 + rnd(1600) }, () => parts[rnd(parts.length)]).join("")}`;
+      try {
+        const doc = (BOUNDED.parse as typeof parse)(html, { scriptingEnabled: true });
+        accepted++;
+        assert.ok(realDepth(doc as never) <= 600 + 8, `accepted at real depth ${realDepth(doc as never)}`);
+      } catch {}
+    }
+    assert.ok(accepted > 10, `only ${accepted} of 60 accepted: the generator no longer exercises the accept path`);
+  });
+  it("adoption agency with a deep furthest block (<b><div><span></b> x24,000) is refused fast; x100 is kept", () => {
+    const t = performance.now();
+    assert.throws(() => sanitizeHtml(`<body>${"<b><div><span></b>".repeat(24_000)}`));
+    assert.ok(performance.now() - t < 100 * SCALE);
+    assert.doesNotThrow(() => sanitizeHtml(`<body>${"<b><div><span></b>".repeat(100)}`));
   });
   it("element cap: twice the SDK tag cap", () => {
     assert.equal(PARSE_MAX_ELEMENTS, 200_000);
