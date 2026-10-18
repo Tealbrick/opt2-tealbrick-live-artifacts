@@ -19,7 +19,8 @@ import { defaultTreeAdapter, parse } from "parse5";
 export const SANITIZER_VERSION = 4;
 
 /** Where the app serves its own assets on the views origin (`/v/live-artifacts/_s/…`, viewer.ts). The SDK keeps URLs under it.
- *  The document CSPs still allow no script or image from there (img-src data: only), so such a URL loads nothing. */
+ *  The app's document CSPs (viewer.ts) still allow no script or image from there (img-src data: blob: with scripts, data: without;
+ *  never 'self', unlike the SDK's NO_SCRIPT_CSP, which the app does not use), so such a URL loads nothing. */
 export const ASSET_PREFIX = "/v/live-artifacts/_s/";
 
 /** The page served when a document cannot be made safe: the SDK's fixed inert page (no agent content, no script). */
