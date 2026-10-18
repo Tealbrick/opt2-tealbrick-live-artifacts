@@ -198,6 +198,37 @@ describe("sanitizer: URL attributes", () => {
   });
 });
 
+describe("sanitizer: data: URLs that navigate or load code (S6/S7 re-check S2)", () => {
+  const DOC = "data:text/html,<link rel=prerender href=http://x.test/>";
+  it("a link, area, svg link, form action, formaction, use and script source lose a data: address; the element and text stay", () => {
+    for (const [html, gone] of [
+      [`<a href="${DOC}">x</a>`, /href=/],
+      [`<map><area href="${DOC}"></map>`, /href=/],
+      [`<svg><a href="${DOC}"><text>x</text></a></svg>`, /href=/],
+      [`<svg><a xlink:href="${DOC}"><text>x</text></a></svg>`, /href=/],
+      [`<form action="${DOC}"><button>b</button></form>`, /action=/],
+      [`<button formaction="${DOC}">b</button>`, /formaction=/],
+      [`<input type=submit formaction="${DOC}">`, /formaction=/],
+      [`<svg><use href="${DOC}"/></svg>`, /href=/],
+      [" <a href=' \tDaTa:text/html,x'>x</a>", /href=/],
+    ] as const) {
+      const out = clean(html);
+      assert.doesNotMatch(out, gone, `${html} kept the data: address: ${out}`);
+      assert.ok(!out.includes("data:text/html"), out);
+    }
+    assert.ok(!clean(`<script src="${DOC}"></script>`).includes("data:text/html"));
+  });
+  it("SMIL cannot write a data: URL into a link", () => {
+    const out = clean(`<svg><a href="#x"><set attributeName="href" to="${DOC}"/><text>x</text></a></svg>`);
+    assert.ok(!out.includes("data:text/html"), out);
+  });
+  it("quiet on good: fragments and relative links stay; raster data: images stay", () => {
+    assert.match(clean('<a href="#top">t</a>'), /href="#top"/);
+    assert.match(clean('<a href="page.html">t</a>'), /href="page\.html"/);
+    assert.match(clean('<img src="data:image/png;base64,AAAA">'), /src="data:image\/png;base64,AAAA"/);
+  });
+});
+
 describe("sanitizer: CSS", () => {
   const bad: [string, string][] = [
     ["url(http://x.test/a.png)", "url"],

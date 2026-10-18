@@ -21,8 +21,9 @@ type El = DefaultTreeAdapterMap["element"];
 type Txt = DefaultTreeAdapterMap["textNode"];
 
 /** The version of the sanitizer's RULES. Raise it with every change that can alter an output; a stored row with an older version
- *  is sanitized again at serve time. (1 = the first release; rows from before the column count as 0.) */
-export const SANITIZER_VERSION = 2;
+ *  is sanitized again at serve time. (1 = the first release; 2 = S6; 3 = no data: URL on links, forms, use, script (S6 re-check);
+ *  rows from before the column count as 0.) */
+export const SANITIZER_VERSION = 3;
 
 /** The document we serve when a page cannot be made safe. Fixed text, no agent content. */
 export const BLOCKED_DOCUMENT = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Page not shown</title></head><body style="font:15px/1.5 system-ui,sans-serif;margin:24px"><p>This page cannot be shown.</p><p>Ask the owner of the page to check it.</p></body></html>`;
@@ -102,9 +103,20 @@ const CSS_ATTRS = new Set(["style", "fill", "stroke", "filter", "mask", "clip-pa
 const REMOVE_ELEMENTS = new Set(["link", "base", "portal", "iframe", "frame", "frameset", "object", "embed", "applet", "noscript", "noembed", "noframes", "isindex", "fencedframe"]);
 const SMIL = new Set(["set", "animate", "animatetransform", "animatemotion", "animatecolor"]);
 
-function urlBad(attr: string, value: string): boolean {
+/** (element, attribute) pairs that navigate to or load CODE from the address: a `data:` URL there is a second document the
+ *  server never sanitized (`<a href="data:text/html,…">`, S6/S7 re-check S2), so only a relative reference is kept. */
+const NO_DATA_URL: Record<string, ReadonlySet<string>> = { ...LINK_ATTRS, use: new Set(["href", "xlink:href"]), script: new Set(["src", "href", "xlink:href"]) };
+function isDataUrl(raw: string): boolean {
+  let start = 0; // leading control characters and spaces are trimmed, tabs and newlines removed, as in classifyUrl
+  while (start < raw.length && raw.charCodeAt(start) <= 32) start++;
+  return /^data:/i.test(raw.slice(start).replace(/[\t\n\r]/g, ""));
+}
+
+function urlBad(attr: string, value: string, tag?: string): boolean {
   if (attr === "srcset" || attr === "imagesrcset") return srcsetUrls(value).some((u) => classifyUrl(u) !== "ok");
   if (attr === "ping") return value.split(/[\t\n\f\r ]+/).some((u) => u !== "" && classifyUrl(u) !== "ok");
+  // no tag (a SMIL value written into a URL attribute): no data: URL either
+  if ((tag === undefined || NO_DATA_URL[tag]?.has(attr)) && isDataUrl(value)) return true;
   return classifyUrl(value) !== "ok";
 }
 
@@ -396,7 +408,7 @@ function inspectElement(el: El, mutate: boolean, f: Findings): boolean {
       rewritten = true;
       continue;
     }
-    if (URL_ATTRS.has(key) && urlBad(key, a.value)) {
+    if (URL_ATTRS.has(key) && urlBad(key, a.value, tag)) {
       if (LINK_ATTRS[tag]?.has(key)) {
         note(f, "link-attribute");
         rewritten = true;
