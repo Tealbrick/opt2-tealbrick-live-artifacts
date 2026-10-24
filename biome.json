@@ -2,5 +2,6 @@
   "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "files": { "includes": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "scripts/**/*.ts", "conformance.start.ts", "!**/node_modules", "!**/dist", "!**/.tb-ci"] },
   "formatter": { "enabled": false },
-  "linter": { "enabled": true, "rules": { "preset": "recommended", "suspicious": { "noExplicitAny": "off", "noTemplateCurlyInString": "off" } } }
+  "linter": { "enabled": true, "rules": { "preset": "recommended", "suspicious": { "noExplicitAny": "error", "noTemplateCurlyInString": "off" } } },
+  "overrides": [{ "includes": ["test/**"], "linter": { "rules": { "suspicious": { "noExplicitAny": "off" } } } }]
 }
